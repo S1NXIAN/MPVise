@@ -7,10 +7,15 @@ Chrome extension to detect m3u8 streams and YouTube videos, play directly on MPV
 - **YouTube** - plays any video
 - **Any site** with m3u8 streams - auto-detects and plays
 
+## Requirements
+
+- Python 3
+- MPV media player installed (`mpv` command available)
+
 ## Setup
 
 1. Start the server:
-   - **Linux/Mac**: `python3 launcher.py` or `python3 launcher.py --daemon`
+   - **Linux/Mac**: `python3 launcher.py` or `python3 launcher.py --daemon &`
    - **Windows**: Double-click `launcher.bat`
 
 2. Load extension in Chrome:
