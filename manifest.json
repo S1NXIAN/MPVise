@@ -3,7 +3,7 @@
   "name": "MPVise - Play on MPV",
   "version": "1.0",
   "description": "Play videos on MPV directly from your browser. Supports m3u8 & yt",
-  "permissions": ["activeTab", "webRequest", "notifications", "contextMenus", "tabs"],
+  "permissions": ["activeTab", "webRequest", "notifications", "contextMenus", "tabs", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {"service_worker": "background.js"},
   "action": {

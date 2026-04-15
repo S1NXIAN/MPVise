@@ -1,66 +1,88 @@
-# MPVise - Play on MPV
+# MPVise
 
-Chrome extension to detect m3u8 streams and YouTube videos, play directly on MPV.
+Play videos directly on MPV from your browser. Works on any streaming site.
 
-## Supported Sites
+## Overview
 
-- **YouTube** - plays any video
-- **Any site** with m3u8 streams - auto-detects and plays
+MPVise is a Chrome extension that detects video streams and plays them on MPV. When an m3u8 stream is detected (common in HLS streaming), it plays directly. Otherwise, it uses yt-dlp to extract the stream URL from any webpage.
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+pip install yt-dlp
+
+# 2. Start the server
+python3 launcher.py
+
+# 3. Load extension in Chrome
+#    chrome://extensions/ → Developer mode → Load unpacked → Select MPVise folder
+```
 
 ## Requirements
 
 - Python 3
-- MPV media player installed (`mpv` command available)
-
-## Setup
-
-1. Start the server:
-   - **Linux/Mac**: `python3 launcher.py` or `python3 launcher.py --daemon &`
-   - **Windows**: Double-click `launcher.bat`
-
-2. Load extension in Chrome:
-   - Go to `chrome://extensions/`
-   - Enable "Developer mode" (top right)
-   - Click "Load unpacked"
-   - Select the `MPVise` folder
+- [MPV](https://mpv.io/) media player
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 
 ## Usage
 
-1. Open any video page (streaming site or YouTube)
-2. Wait for video to start playing (triggers m3u8 detection)
-3. Click extension icon:
-   - **Badge shows count** = m3u8 URLs detected
-   - **Click** → plays on MPV
-   - **YouTube** → passes clean youtu.be URL
+### Method 1: Extension Icon
 
-## Server Options
+1. Visit any video page
+2. Badge shows "1" when m3u8 stream detected
+3. Click the extension icon
 
-| Command | Mode | Use case |
-|---------|------|----------|
-| `python3 launcher.py` | Foreground | Ctrl+C to stop |
-| `python3 launcher.py --daemon` | Background | Run & forget |
-| `python3 launcher.py --kill` | Stop | Kill background server |
+### Method 2: Right-Click Context Menu
 
-| OS | Start | Stop |
-|----|-------|------|
-| Linux/Mac | `python3 launcher.py` or `launcher.py --daemon` | `python3 launcher.py --kill` |
-| Windows | Double-click `launcher.bat` | Restart |
+Right-click anywhere on the page and select **Play with MPVise**. Also works on links and video elements.
 
-## Files
+### Method 3: Server Commands
+
+```bash
+python3 launcher.py          # Start in foreground (Ctrl+C to stop)
+python3 launcher.py --daemon # Start in background
+python3 launcher.py --kill  # Stop the server
+```
+
+## How It Works
+
+```
+Chrome Extension ──▶ Daemon (yt-dlp) ──▶ MPV Player
+```
+
+1. **m3u8 Detection**: Extension intercepts HTTP requests, looks for `.m3u8` URLs
+2. **Badge**: Shows "1" when stream detected
+3. **Direct Play**: If m3u8 found, passes URL directly to mpv
+4. **Fallback**: No m3u8 → yt-dlp extracts stream → mpv plays extracted URL
+
+## Features
+
+- **Universal Support**: Works on any site with video
+- **m3u8 Detection**: Automatic stream detection for HLS streams
+- **yt-dlp Fallback**: Extracts streams when m3u8 not available
+- **Cookie Support**: Uses Chrome cookies for sites requiring login
+- **Caching**: Persists detection across tab navigation
+
+## Project Structure
 
 ```
 MPVise/
-├── launcher.py       # Main script (start/stop/daemon)
-├── launcher.bat     # Windows shortcut
-├── daemon.py        # Server backend
 ├── background.js    # Extension logic
-├── manifest.json   # Chrome extension config
-├── icons/          # Extension icons
-└── README.md       # This file
+├── daemon.py     # HTTP server + yt-dlp integration
+├── launcher.py  # CLI for server management
+├── manifest.json # Chrome extension manifest
+└── icons/      # Extension icons
 ```
 
 ## Troubleshooting
 
-- **Server not running**: Run `python3 launcher.py`
-- **No m3u8 found**: Make sure video is playing before clicking
-- **MPV not opening**: Verify mpv is installed (`which mpv`)
+| Issue | Solution |
+|-------|----------|
+| Server Offline | Run `python3 launcher.py` |
+| Playback Failed | Site not supported or video unavailable |
+| MPV not opening | Verify `mpv` is installed: `which mpv` |
+
+## License
+
+MIT
