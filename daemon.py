@@ -97,25 +97,27 @@ async def extract_stream(url: str) -> str | None:
                 
                 for line in lines:
                     if is_video_url(line):
-                        logger.info(f"Extracted URL via {browser or 'no-cookies'}")
+                        logger.info(f"SUCCESS: Extracted URL via {browser or 'no-cookies'}")
                         return line
                         
             else:
-                err = stderr.decode().lower()
-                if "could not find" in err and "cookies" in err:
+                err = stderr.decode().strip()
+                if "could not find" in err.lower() and "cookies" in err.lower():
+                    logger.debug(f"INFO: Browser {browser} has no cookies for this site")
                     continue
-                logger.debug(f"yt-dlp err: {stderr.decode()[:200]}")
+                logger.error(f"YT-DLP ERROR ({browser or 'direct'}): {err[:500]}")
                 
         except asyncio.TimeoutError:
-            logger.warning(f"Timeout with {browser or 'no-cookies'}")
+            logger.warning(f"TIMEOUT: {browser or 'no-cookies'} took too long")
         except Exception as e:
-            logger.error(f"Extraction error: {e}")
+            logger.error(f"EXTRACTION FAILED: {type(e).__name__}: {e}")
     
     return None
 
 async def add_to_mpv_queue(url: str) -> bool:
     """Try to add to existing mpv instance"""
     if not MPV_SOCKET.exists():
+        logger.debug("DEBUG: MPV socket not found, starting new instance")
         return False
     
     try:
@@ -125,15 +127,16 @@ async def add_to_mpv_queue(url: str) -> bool:
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        logger.info("Added to existing mpv queue")
+        logger.info(f"QUEUED: Added {url[:60]}... to existing mpv session")
         return True
-    except:
+    except Exception as e:
+        logger.warning(f"QUEUE FAILED: Could not send to mpv socket: {e}")
         return False
 
 async def launch_mpv(url: str):
     """Launch mpv with optimizations"""
     if not is_video_url(url):
-        logger.error(f"Not a video URL: {url[:100]}")
+        logger.error(f"INVALID: Not a video URL: {url[:100]}")
         return
     
     # Try to add to queue first
@@ -162,9 +165,9 @@ async def launch_mpv(url: str):
             stdin=subprocess.DEVNULL,
             start_new_session=True
         )
-        logger.info(f"Launched mpv PID {proc.pid}")
+        logger.info(f"LAUNCHED: mpv (PID: {proc.pid}) for {url[:60]}...")
     except Exception as e:
-        logger.error(f"Failed to launch mpv: {e}")
+        logger.error(f"MPV LAUNCH FAILED: {e}")
 
 # HTTP Handlers
 async def handle_ping(request):
@@ -187,17 +190,20 @@ async def handle_play(request):
         use_fallback = data.get('fallback', True)
         
         if not url:
+            logger.warning("REQUEST ERROR: No URL provided in payload")
             return web.json_response({"error": "No URL"}, status=400, headers={'Access-Control-Allow-Origin': '*'})
         
-        logger.info(f"Play request: {url[:80]}...")
+        logger.info(f"PLAY REQUEST: {url}")
         
         target_url = url
         
         if use_fallback:
+            logger.info(f"EXTRACTING: {url[:60]}...")
             extracted = await extract_stream(url)
             if extracted:
                 target_url = extracted
             else:
+                logger.error(f"EXTRACTION FAILED: {url}")
                 return web.json_response(
                     {"error": "Extraction failed"}, 
                     status=500,
@@ -205,6 +211,7 @@ async def handle_play(request):
                 )
         
         if not is_video_url(target_url):
+            logger.error(f"INVALID URL: {target_url[:100]}")
             return web.json_response(
                 {"error": "Not a valid video URL"}, 
                 status=400,

@@ -1,7 +1,5 @@
-const SOCKET_PATH = '/home/xian/.config/mpvise/mpvise.sock'; // Adjust username or make dynamic
-
 let m3u8Cache = {};
-const PORT = 8765; // Fallback to TCP if needed
+const PORT = 8765;
 
 function isYoutube(url) {
   return url && (url.includes('youtube.com') || url.includes('youtu.be'));
@@ -19,9 +17,47 @@ async function notify(title, message) {
   } catch(e) {}
 }
 
-// Fast Unix socket communication via native messaging-style fetch
-// Since Chrome can't do Unix sockets directly, we use HTTP fallback on localhost
-// or you can use a native helper. For now, optimized TCP:
+async function updateBadge(tabId) {
+  const streams = m3u8Cache[tabId] || [];
+  const count = streams.length;
+  await chrome.action.setBadgeText({
+    tabId: tabId,
+    text: count > 0 ? '!' : ''
+  });
+  await chrome.action.setBadgeBackgroundColor({
+    tabId: tabId,
+    color: '#34d399'
+  });
+}
+
+// Sniffer
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    const url = details.url;
+    const tabId = details.tabId;
+    
+    if (tabId < 0) return;
+    
+    // Filter for potential master playlists, ignore common segment patterns
+    if (url.includes('.m3u8') && !url.includes('seg-') && !url.includes('fragment')) {
+      if (!m3u8Cache[tabId]) m3u8Cache[tabId] = [];
+      if (!m3u8Cache[tabId].includes(url)) {
+        m3u8Cache[tabId].push(url);
+        updateBadge(tabId);
+      }
+    }
+  },
+  { urls: ["<all_urls>"], types: ["xmlhttprequest", "other"] }
+);
+
+// Cleanup on tab close/refresh
+chrome.tabs.onRemoved.addListener((tabId) => delete m3u8Cache[tabId]);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading') {
+    delete m3u8Cache[tabId];
+    updateBadge(tabId);
+  }
+});
 
 async function sendToServer(url, fallback = true) {
   try {
@@ -58,11 +94,17 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  // 1. Check if we have detected streams for this tab
+  const streams = m3u8Cache[tab.id] || [];
+  if (streams.length > 0) {
+    sendToServer(streams[0], false); // Play direct m3u8
+    return;
+  }
+
+  // 2. Proceed with current process
   let url = info.linkUrl || info.srcUrl || tab.url;
-  
   if (!url) return;
   
-  // If blob/data URL on YouTube, use page URL
   if (url.startsWith('blob:') || url.startsWith('data:')) {
     if (isYoutube(tab.url)) url = tab.url;
     else {
@@ -80,5 +122,14 @@ chrome.action.onClicked.addListener(async (tab) => {
     notify('Error', 'Invalid page');
     return;
   }
+
+  // 1. Check if we have detected streams
+  const streams = m3u8Cache[tab.id] || [];
+  if (streams.length > 0) {
+    sendToServer(streams[0], false);
+    return;
+  }
+
+  // 2. Proceed with current process
   sendToServer(tab.url, true);
 });

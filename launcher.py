@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 CONFIG_DIR = Path.home() / ".config" / "mpvise"
 SOCKET_PATH = CONFIG_DIR / "mpvise.sock"
 PID_FILE = CONFIG_DIR / "daemon.pid"
+LOG_PATH = CONFIG_DIR / "daemon.log"
 
 async def is_running():
     """Check if daemon is responsive"""
@@ -102,6 +103,21 @@ async def status():
     else:
         print("Not running")
 
+async def show_logs(follow=False):
+    """Show daemon logs"""
+    if not LOG_PATH.exists():
+        print("No log file found")
+        return
+    
+    if follow:
+        import subprocess
+        try:
+            subprocess.run(['tail', '-f', str(LOG_PATH)])
+        except KeyboardInterrupt:
+            pass
+    else:
+        print(LOG_PATH.read_text())
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     
@@ -111,6 +127,8 @@ def main():
         asyncio.run(stop_daemon())
     elif cmd == "status":
         asyncio.run(status())
+    elif cmd == "logs":
+        asyncio.run(show_logs(follow=True))
     elif cmd == "run":
         # Run in foreground
         import daemon
