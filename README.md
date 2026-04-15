@@ -1,88 +1,80 @@
-# MPVise
+# <img src="icons/play-button-48.png" align="center" width="32"> MPVise
 
-Play videos directly on MPV from your browser. Works on any streaming site.
+> Play any web video directly in **mpv** with automatic stream detection and `yt-dlp` fallback.
 
-## Overview
+MPVise is a lightweight browser extension and local daemon that bridges your web browser with the powerful [mpv media player](https://mpv.io/). It automatically sniffs for high-quality HLS master playlists (m3u8) while providing a robust fallback mechanism using `yt-dlp` for sites without direct stream exposure.
 
-MPVise is a Chrome extension that detects video streams and plays them on MPV. When an m3u8 stream is detected (common in HLS streaming), it plays directly. Otherwise, it uses yt-dlp to extract the stream URL from any webpage.
+## ✨ Key Features
 
-## Quick Start
+- **🎯 Smart Detection**: Intercepts HLS master playlists and filters out individual media segments to keep your badge clean.
+- **⚡ One-Click Playback**: Click the extension icon to instantly send the detected stream to mpv.
+- **🔗 Context Awareness**: Right-click any page, link, or video element to "Play with MPVise".
+- **🍪 Cookie Sync**: Automatically uses your Chrome cookies for `yt-dlp` extraction, enabling playback from sites that require authentication.
+- **🚀 Lightweight Daemon**: A minimal Python backend that stays out of your way and handles stream resolution.
+
+## 📋 Requirements
+
+Before you begin, ensure you have the following installed:
+
+- **Python 3.x**
+- **[mpv](https://mpv.io/)**: The media player.
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**: For advanced stream extraction.
+
+## 🚀 Quick Start
+
+### 1. Set up the Backend
+Clone the repository and start the local server:
 
 ```bash
-# 1. Install dependencies
-pip install yt-dlp
-
-# 2. Start the server
+# Start in the foreground
 python3 launcher.py
 
-# 3. Load extension in Chrome
-#    chrome://extensions/ → Developer mode → Load unpacked → Select MPVise folder
+# OR start in the background (daemon mode)
+python3 launcher.py --daemon
 ```
 
-## Requirements
+### 2. Install the Extension
+1. Open Chrome and navigate to `chrome://extensions/`.
+2. Enable **Developer mode** in the top right.
+3. Click **Load unpacked** and select the MPVise project directory.
 
-- Python 3
-- [MPV](https://mpv.io/) media player
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+## 🛠️ Usage
 
-## Usage
+### Browser Extension
+- **Badge Count**: The extension icon displays a badge showing how many valid HLS streams were detected on the current page.
+- **Action Button**: Click the icon to play the first detected stream. If no streams are found, it will attempt to resolve the current page URL using `yt-dlp`.
+- **Context Menu**: Right-click a link or video and select **Play with MPVise**.
 
-### Method 1: Extension Icon
-
-1. Visit any video page
-2. Badge shows "1" when m3u8 stream detected
-3. Click the extension icon
-
-### Method 2: Right-Click Context Menu
-
-Right-click anywhere on the page and select **Play with MPVise**. Also works on links and video elements.
-
-### Method 3: Server Commands
+### CLI Management
+The `launcher.py` script provides simple management for the background process:
 
 ```bash
 python3 launcher.py          # Start in foreground (Ctrl+C to stop)
 python3 launcher.py --daemon # Start in background
-python3 launcher.py --kill  # Stop the server
+python3 launcher.py --kill   # Stop the running server
 ```
 
-## How It Works
+> [!TIP]
+> If playback fails, ensure the server is running by clicking the extension icon; it will notify you if it cannot reach `localhost:8765`.
 
-```
-Chrome Extension ──▶ Daemon (yt-dlp) ──▶ MPV Player
-```
+## 🏗️ How it Works
 
-1. **m3u8 Detection**: Extension intercepts HTTP requests, looks for `.m3u8` URLs
-2. **Badge**: Shows "1" when stream detected
-3. **Direct Play**: If m3u8 found, passes URL directly to mpv
-4. **Fallback**: No m3u8 → yt-dlp extracts stream → mpv plays extracted URL
+1. **Sniffing**: The extension monitors network requests for `.m3u8` files and validates them as master playlists.
+2. **Communication**: When triggered, the extension sends the URL to the local Python daemon via a POST request.
+3. **Resolution**: The daemon either passes the URL directly to `mpv` or uses `yt-dlp` (with your browser's cookies) to find the best available stream.
+4. **Playback**: `mpv` is launched as a detached process, allowing you to continue browsing while you watch.
 
-## Features
+## 🗺️ Roadmap
 
-- **Universal Support**: Works on any site with video
-- **m3u8 Detection**: Automatic stream detection for HLS streams
-- **yt-dlp Fallback**: Extracts streams when m3u8 not available
-- **Cookie Support**: Uses Chrome cookies for sites requiring login
-- **Caching**: Persists detection across tab navigation
+Active development is focused on expanding MPVise's reach and improving the "set-and-forget" experience. Upcoming features include:
 
-## Project Structure
+- **💻 Multi-Platform Support**: Native Windows and macOS compatibility for the daemon and launcher scripts.
+- **⚙️ System-Level Integration**: 
+  - **Linux**: Systemd unit files for automatic background startup on login.
+  - **macOS**: Launchd agents for seamless integration with the Mac ecosystem.
+  - **Windows**: Background service installation and Scheduled Task automation.
+- **🛠️ Zero-Config Setup**: Automated installers that handle `yt-dlp` and `mpv` environment configuration.
 
-```
-MPVise/
-├── background.js    # Extension logic
-├── daemon.py     # HTTP server + yt-dlp integration
-├── launcher.py  # CLI for server management
-├── manifest.json # Chrome extension manifest
-└── icons/      # Extension icons
-```
+---
 
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Server Offline | Run `python3 launcher.py` |
-| Playback Failed | Site not supported or video unavailable |
-| MPV not opening | Verify `mpv` is installed: `which mpv` |
-
-## License
-
-MIT
+*MPVise v2.0*
