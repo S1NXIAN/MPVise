@@ -6,6 +6,15 @@
   "permissions": ["activeTab", "webRequest", "notifications", "contextMenus", "tabs", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {"service_worker": "background.js"},
+  "commands": {
+    "play-with-mpvise": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+V",
+        "mac": "Command+Shift+V"
+      },
+      "description": "Play video with MPVise"
+    }
+  },
   "action": {
     "default_icon": {
       "16": "icons/play-button-16.png",

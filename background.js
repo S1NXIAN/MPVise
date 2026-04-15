@@ -146,7 +146,7 @@ async function resolveUrl(info, tab) {
   return cached.length > 0 ? cached[0] : tab.url;
 }
 
-chrome.action.onClicked.addListener(async (tab) => {
+async function handleActionClick(tab) {
   const serverOk = await checkServer();
   if (!serverOk) {
     chrome.action.setIcon({path: STOP_ICON, tabId: tab.id});
@@ -168,5 +168,14 @@ chrome.action.onClicked.addListener(async (tab) => {
     await sendToServer(cached[0], false);
   } else {
     await sendToServer(tab.url, true);
+  }
+}
+
+chrome.action.onClicked.addListener(handleActionClick);
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command === 'play-with-mpvise') {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) handleActionClick(tab);
   }
 });
