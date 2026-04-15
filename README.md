@@ -1,62 +1,66 @@
-# 🗺️ MPVise Development Roadmap
+# MPVise - Play on MPV
 
-> **Current Version:** 1.0  
-> **Focus:** Linux first, then macOS, then Windows.  
-> **Philosophy:** No bloat, just float. Keep it simple, transparent, and hackable.
+Chrome extension to detect m3u8 streams and YouTube videos, play directly on MPV.
 
----
+## Supported Sites
 
-## 🚀 Upcoming Release (v1.1)
+- **YouTube** - plays any video
+- **Any site** with m3u8 streams - auto-detects and plays
 
-| Task | Description | Status |
-|------|-------------|--------|
-| **Fix M3U8 Detection Staleness** | After navigating between episodes on SPAs, cached M3U8 URLs cause wrong playback. Clear cache on navigation and re-detect on popup open. | ⬜ Pending |
-| **Systemd Setup Script** | Auto‑install user service with directory detection, restart on failure, and idempotent behavior. | ⬜ Pending |
-| **Systemd Uninstall Script** | Cleanly stop, disable, and remove the user service. | ⬜ Pending |
+## Requirements
 
----
+- Python 3
+- MPV media player installed (`mpv` command available)
 
-## 🐧 v1.2 – Linux Foundation
+## Setup
 
-- [ ] **Universal Fallback** – Pass unsupported page URLs directly to MPV, letting the user's `yt-dlp` handle extraction.
-- [ ] **Clean YouTube URL Extraction** – Verify YouTube links are shortened to `youtu.be/ID` for optimal handoff.
-- [ ] **Robust Error Handling** – Log errors to `~/.cache/mpvise/mpvise.log` and surface MPV‑not‑found errors in the extension UI.
+1. Start the server:
+   - **Linux/Mac**: `python3 launcher.py` or `python3 launcher.py --daemon &`
+   - **Windows**: Double-click `launcher.bat`
 
----
+2. Load extension in Chrome:
+   - Go to `chrome://extensions/`
+   - Enable "Developer mode" (top right)
+   - Click "Load unpacked"
+   - Select the `MPVise` folder
 
-## 🌐 v1.3 – Browser Integration
+## Usage
 
-- [ ] **Context Menu (Right‑Click)** – Add "Play with MPVise" to Chrome's context menu for pages, links, and video elements.
-- [ ] **Keyboard Shortcut** – Define `Ctrl+Shift+M` (configurable) to play the current tab.
-- [ ] **Badge Indicator Polish** – Keep the M3U8 count badge; optionally change color when server is unreachable.
+1. Open any video page (streaming site or YouTube)
+2. Wait for video to start playing (triggers m3u8 detection)
+3. Click extension icon:
+   - **Badge shows count** = m3u8 URLs detected
+   - **Click** → plays on MPV
+   - **YouTube** → passes clean youtu.be URL
 
----
+## Server Options
 
-## 💻 v1.4 – Cross‑Platform Support
+| Command | Mode | Use case |
+|---------|------|----------|
+| `python3 launcher.py` | Foreground | Ctrl+C to stop |
+| `python3 launcher.py --daemon` | Background | Run & forget |
+| `python3 launcher.py --kill` | Stop | Kill background server |
 
-| Platform | Task |
-|----------|------|
-| **macOS** | Create `setup-launchd.sh` to generate and load a LaunchAgent plist. |
-| **Windows** | Create `setup-task.ps1` to register a hidden scheduled task with a 30‑second delay. |
-| **Universal** | Add a top‑level `install.sh` / `install.ps1` that detects the OS and delegates to the correct setup script. |
+| OS | Start | Stop |
+|----|-------|------|
+| Linux/Mac | `python3 launcher.py` or `launcher.py --daemon` | `python3 launcher.py --kill` |
+| Windows | Double-click `launcher.bat` | Restart |
 
----
+## Files
 
-## 📚 v1.5 – Documentation & Polish
+```
+MPVise/
+├── launcher.py       # Main script (start/stop/daemon)
+├── launcher.bat     # Windows shortcut
+├── daemon.py        # Server backend
+├── background.js    # Extension logic
+├── manifest.json   # Chrome extension config
+├── icons/          # Extension icons
+└── README.md       # This file
+```
 
-- [ ] **Update `README.md`** – Document the three usage tiers (foreground, `--daemon`, systemd), troubleshooting, and new features.
-- [ ] **Add Uninstall Instructions** – Clear steps for each platform to remove the service/task and delete the folder.
-- [ ] **Add `CONTRIBUTING.md`** (optional) – Guidelines for potential contributors.
+## Troubleshooting
 
----
-
-## ✨ Future Ideas (v2.0+)
-
-- [ ] **yt‑dlp Fallback Toggle** – Simple options page or config flag to disable fallback behavior.
-- [ ] **Linux Packaging** – AUR package, `.deb`, and Flatpak manifest.
-- [ ] **Error Notification in Popup** – Show a friendly message when the local server is down.
-- [ ] **Auto‑Update Check** – Optional periodic check for new releases.
-
----
-
-*Last updated: April 2026*
+- **Server not running**: Run `python3 launcher.py`
+- **No m3u8 found**: Make sure video is playing before clicking
+- **MPV not opening**: Verify mpv is installed (`which mpv`)
