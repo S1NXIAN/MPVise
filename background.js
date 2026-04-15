@@ -1,51 +1,45 @@
 let m3u8Cache = {};
 const PORT = 8765;
 
-function isYoutube(url) {
-  return url && (url.includes('youtube.com') || url.includes('youtu.be'));
-}
-
-async function notify(title, message) {
-  try {
-    await chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/play-button-128.png',
-      title,
-      message: message.slice(0, 100),
-      priority: 1
-    });
-  } catch(e) {}
+function notify(title, message) {
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/play-button-128.png',
+    title,
+    message: message.slice(0, 100),
+    priority: 1
+  });
 }
 
 async function updateBadge(tabId) {
-  const streams = m3u8Cache[tabId] || [];
-  const count = streams.length;
-  await chrome.action.setBadgeText({
-    tabId: tabId,
-    text: count > 0 ? '!' : ''
-  });
-  await chrome.action.setBadgeBackgroundColor({
-    tabId: tabId,
-    color: '#34d399'
-  });
+  await Promise.all([
+    chrome.action.setBadgeText({ tabId, text: (m3u8Cache[tabId] || []).length > 0 ? '!' : '' }),
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#34d399' })
+  ]);
 }
 
-// Sniffer
+// Content-aware Sniffer
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     const url = details.url;
     const tabId = details.tabId;
-    
-    if (tabId < 0) return;
-    
-    // Filter for potential master playlists, ignore common segment patterns
-    if (url.includes('.m3u8') && !url.includes('seg-') && !url.includes('fragment')) {
-      if (!m3u8Cache[tabId]) m3u8Cache[tabId] = [];
-      if (!m3u8Cache[tabId].includes(url)) {
-        m3u8Cache[tabId].push(url);
-        updateBadge(tabId);
-      }
-    }
+    if (tabId <= 0 || !url.includes('.m3u8')) return;
+
+    // Fetch and check if it's a true master playlist
+    fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) })
+      .then(resp => resp.text())
+      .then(text => {
+        const isMaster = text.startsWith('#EXTM3U') && text.includes('#EXT-X-STREAM-INF') && text.includes('BANDWIDTH=') && !text.includes('#EXTINF') && !text.includes('#EXT-X-TARGETDURATION');
+        
+        if (isMaster) {
+          if (!m3u8Cache[tabId]) m3u8Cache[tabId] = [];
+          if (!m3u8Cache[tabId].includes(url)) {
+            m3u8Cache[tabId].push(url);
+            updateBadge(tabId);
+          }
+        }
+      })
+      .catch(() => {});
   },
   { urls: ["<all_urls>"], types: ["xmlhttprequest", "other"] }
 );
@@ -59,7 +53,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 
-async function sendToServer(url, fallback = true) {
+async function sendToServer(url, fallback = true, referer = null) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
@@ -67,7 +61,7 @@ async function sendToServer(url, fallback = true) {
     const response = await fetch(`http://127.0.0.1:${PORT}/play`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url, fallback}),
+      body: JSON.stringify({url, fallback, referer}),
       signal: controller.signal
     });
     
@@ -84,7 +78,7 @@ async function sendToServer(url, fallback = true) {
   }
 }
 
-// Context menu
+// Context menu registration
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'play',
@@ -94,42 +88,19 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  // 1. Check if we have detected streams for this tab
   const streams = m3u8Cache[tab.id] || [];
-  if (streams.length > 0) {
-    sendToServer(streams[0], false); // Play direct m3u8
+  if (streams.length) {
+    sendToServer(streams[0], false, tab.url);
     return;
   }
-
-  // 2. Proceed with current process
-  let url = info.linkUrl || info.srcUrl || tab.url;
-  if (!url) return;
-  
-  if (url.startsWith('blob:') || url.startsWith('data:')) {
-    if (isYoutube(tab.url)) url = tab.url;
-    else {
-      notify('Error', 'Cannot play blob URLs');
-      return;
-    }
-  }
-  
-  sendToServer(url, true);
+  let targetUrl = info.linkUrl || info.srcUrl || tab.url;
+  if (targetUrl.startsWith('blob:') || targetUrl.startsWith('data:')) targetUrl = tab.url; 
+  sendToServer(targetUrl, true, tab.url);
 });
 
-// Extension button
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.url || tab.url.startsWith('chrome://')) {
-    notify('Error', 'Invalid page');
-    return;
-  }
-
-  // 1. Check if we have detected streams
+  if (!tab.url || tab.url.startsWith('chrome://')) return notify('Error', 'Invalid page');
   const streams = m3u8Cache[tab.id] || [];
-  if (streams.length > 0) {
-    sendToServer(streams[0], false);
-    return;
-  }
-
-  // 2. Proceed with current process
-  sendToServer(tab.url, true);
+  if (streams.length) return sendToServer(streams[0], false, tab.url);
+  sendToServer(tab.url, true, tab.url);
 });

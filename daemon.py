@@ -59,8 +59,8 @@ def sanitize_url(url: str) -> str:
         raise ValueError("Invalid characters in URL")
     return url
 
-async def extract_stream(url: str) -> str | None:
-    """Fast yt-dlp extraction"""
+async def extract_stream(url: str) -> tuple[str | None, str | None]:
+    """Fast yt-dlp extraction - returns (url, browser)"""
     url = sanitize_url(url)
     
     # Try without cookies first (fastest)
@@ -98,7 +98,7 @@ async def extract_stream(url: str) -> str | None:
                 for line in lines:
                     if is_video_url(line):
                         logger.info(f"SUCCESS: Extracted URL via {browser or 'no-cookies'}")
-                        return line
+                        return line, browser
                         
             else:
                 err = stderr.decode().strip()
@@ -112,7 +112,7 @@ async def extract_stream(url: str) -> str | None:
         except Exception as e:
             logger.error(f"EXTRACTION FAILED: {type(e).__name__}: {e}")
     
-    return None
+    return None, None
 
 async def add_to_mpv_queue(url: str) -> bool:
     """Try to add to existing mpv instance"""
@@ -133,8 +133,8 @@ async def add_to_mpv_queue(url: str) -> bool:
         logger.warning(f"QUEUE FAILED: Could not send to mpv socket: {e}")
         return False
 
-async def launch_mpv(url: str):
-    """Launch mpv with optimizations"""
+async def launch_mpv(url: str, referer: str | None = None, browser: str | None = None):
+    """Launch mpv with optimizations and headers"""
     if not is_video_url(url):
         logger.error(f"INVALID: Not a video URL: {url[:100]}")
         return
@@ -146,22 +146,28 @@ async def launch_mpv(url: str):
     # Launch new mpv instance
     cmd = [
         'mpv',
-        '--force-window=immediate',
-        '--keep-open=yes',
-        '--cache=yes',
-        '--cache-secs=30',
-        '--demuxer-max-bytes=50M',
         '--input-ipc-server=/tmp/mpvsocket',
-        '--ytdl-format=best[height<=1080]/best',
-        '--hwdec=auto',
-        '--', url
+        '--keep-open=yes',
+        '--force-window=immediate',
     ]
+
+    if referer:
+        cmd.append(f'--referrer={referer}')
+    
+    if browser:
+        cmd.append(f'--cookies-from-browser={browser}')
+    
+    # Standard User-Agent to prevent basic bot blocking
+    cmd.append('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    
+    cmd.extend(['--', url])
     
     try:
+        mpv_log = open(CONFIG_DIR / "mpv.log", "a")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=mpv_log,
             stdin=subprocess.DEVNULL,
             start_new_session=True
         )
@@ -196,12 +202,15 @@ async def handle_play(request):
         logger.info(f"PLAY REQUEST: {url}")
         
         target_url = url
+        referer_url = url # Use original as referer
+        target_browser = None
         
         if use_fallback:
             logger.info(f"EXTRACTING: {url[:60]}...")
-            extracted = await extract_stream(url)
-            if extracted:
-                target_url = extracted
+            extracted_url, browser = await extract_stream(url)
+            if extracted_url:
+                target_url = extracted_url
+                target_browser = browser
             else:
                 logger.error(f"EXTRACTION FAILED: {url}")
                 return web.json_response(
@@ -219,7 +228,7 @@ async def handle_play(request):
             )
         
         # Launch async (don't wait)
-        asyncio.create_task(launch_mpv(target_url))
+        asyncio.create_task(launch_mpv(target_url, referer=referer_url, browser=target_browser))
         
         return web.json_response(
             {"ok": True, "message": "Playing"},
