@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy this file to ~/.config/mpvise/config.json and edit as needed.",
+
+  "port": 8765,
+
+  "mpv_socket": "/tmp/mpvsocket",
+
+  "mpv_args": [],
+
+  "ytdlp_format": "best[height<=1080]/best",
+
+  "browsers": ["vivaldi", "chrome", "firefox", "brave"],
+
+  "cache_ttl_seconds": 300,
+
+  "log_max_bytes": 5242880,
+
+  "ytdlp_timeout": 30,
+
+  "rate_limit_rps": 10
+}
