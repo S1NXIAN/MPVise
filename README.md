@@ -1,4 +1,4 @@
-# MPVise
+# MPVise v2.0
 
 Play videos directly on MPV from your browser. Works on any streaming site.
 
@@ -30,8 +30,8 @@ python3 launcher.py
 ### Method 1: Extension Icon
 
 1. Visit any video page
-2. Badge shows "1" when m3u8 stream detected
-3. Click the extension icon
+2. Badge shows the number of detected m3u8 streams
+3. Click the extension icon to play the first detected stream (or current page URL as fallback)
 
 ### Method 2: Right-Click Context Menu
 
@@ -52,7 +52,7 @@ Chrome Extension ──▶ Daemon (yt-dlp) ──▶ MPV Player
 ```
 
 1. **m3u8 Detection**: Extension intercepts HTTP requests, looks for `.m3u8` URLs
-2. **Badge**: Shows "1" when stream detected
+2. **Badge**: Shows the count of streams detected on the current tab
 3. **Direct Play**: If m3u8 found, passes URL directly to mpv
 4. **Fallback**: No m3u8 → yt-dlp extracts stream → mpv plays extracted URL
 
@@ -63,15 +63,16 @@ Chrome Extension ──▶ Daemon (yt-dlp) ──▶ MPV Player
 - **yt-dlp Fallback**: Extracts streams when m3u8 not available
 - **Cookie Support**: Uses Chrome cookies for sites requiring login
 - **Caching**: Persists detection across tab navigation
+- **Refined Logic**: Version 2.0 features improved URL resolution and cleaner server handling
 
 ## Project Structure
 
 ```
 MPVise/
-├── background.js    # Extension logic
+├── background.js    # Extension logic (async/await, storage helpers)
 ├── daemon.py     # HTTP server + yt-dlp integration
-├── launcher.py  # CLI for server management
-├── manifest.json # Chrome extension manifest
+├── launcher.py  # CLI for server management (improved daemon logic)
+├── manifest.json # Chrome extension manifest (v2.0)
 └── icons/      # Extension icons
 ```
 
