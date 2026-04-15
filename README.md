@@ -64,6 +64,17 @@ python3 launcher.py --kill   # Stop the running server
 3. **Resolution**: The daemon either passes the URL directly to `mpv` or uses `yt-dlp` (with your browser's cookies) to find the best available stream.
 4. **Playback**: `mpv` is launched as a detached process, allowing you to continue browsing while you watch.
 
+## 🗺️ Roadmap
+
+Active development is focused on expanding MPVise's reach and improving the "set-and-forget" experience. Upcoming features include:
+
+- **💻 Multi-Platform Support**: Native Windows and macOS compatibility for the daemon and launcher scripts.
+- **⚙️ System-Level Integration**: 
+  - **Linux**: Systemd unit files for automatic background startup on login.
+  - **macOS**: Launchd agents for seamless integration with the Mac ecosystem.
+  - **Windows**: Background service installation and Scheduled Task automation.
+- **🛠️ Zero-Config Setup**: Automated installers that handle `yt-dlp` and `mpv` environment configuration.
+
 ---
 
 *MPVise v2.0*
