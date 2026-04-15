@@ -31,26 +31,27 @@ def start(daemon=False):
   if isServerRunning():
     print(f'MPVise server already running on http://localhost:{PORT}')
     return
-  
+
   print('Starting MPVise...')
   proc = startDaemon()
-  
-  if isServerRunning():
-    if daemon:
-      print(f'Running in background (PID: {proc.pid})')
-      print('Stays active until restart or: python3 launcher.py --kill')
-      sys.exit(0)
-    else:
-      print(f'MPVise started on http://localhost:{PORT}')
-      print('Press Ctrl+C to stop')
-      try:
-        while True:
-          time.sleep(1)
-      except KeyboardInterrupt:
-        print('\nStopping...')
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-  else:
+
+  if not isServerRunning():
     print('Failed to start')
+    return
+
+  if daemon:
+    print(f'Running in background (PID: {proc.pid})')
+    print('Stays active until restart or: python3 launcher.py --kill')
+    sys.exit(0)
+
+  print(f'MPVise started on http://localhost:{PORT}')
+  print('Press Ctrl+C to stop')
+  try:
+    while True:
+      time.sleep(1)
+  except KeyboardInterrupt:
+    print('\nStopping...')
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
 
 def stop():
   if not isServerRunning():

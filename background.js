@@ -13,6 +13,21 @@ function notify(title, msg = '') {
   });
 }
 
+async function getM3u8s() {
+  const result = await chrome.storage.local.get(['m3u8s']);
+  return result.m3u8s || {};
+}
+
+async function setM3u8s(data) {
+  chrome.storage.local.set({m3u8s: data});
+}
+
+async function updateBadge(tabId) {
+  const data = await getM3u8s();
+  const cached = data[tabId] || [];
+  chrome.action.setBadgeText({text: cached.length ? String(cached.length) : '', tabId});
+}
+
 async function checkServer() {
   try {
     const resp = await fetch(`http://localhost:${PORT}/ping`);
@@ -67,13 +82,9 @@ chrome.webRequest.onBeforeRequest.addListener(d => {
 
 async function sniffM3u8(url, tabId) {
   try {
-    // host_permissions: ["<all_urls>"] grants cross-origin access, bypassing CORS
     const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
     const text = await resp.text();
 
-    // Master playlists have #EXT-X-STREAM-INF BEFORE any #EXTINF tag.
-    // Media playlists start with #EXTINF immediately.
-    // This prevents false positives from media playlists that contain #EXT-X-MEDIA.
     const streamIdx = text.indexOf('#EXT-X-STREAM-INF');
     const extinfIdx = text.indexOf('#EXTINF');
     const isMaster = streamIdx !== -1 && (extinfIdx === -1 || streamIdx < extinfIdx);
@@ -82,70 +93,42 @@ async function sniffM3u8(url, tabId) {
     return;
   }
 
-  chrome.storage.local.get(['m3u8s'], r => {
-    const data = r.m3u8s || {};
-    const cached = data[tabId] || [];
-    if (!cached.includes(url)) {
-      cached.push(url);
-      data[tabId] = cached;
-      chrome.storage.local.set({m3u8s: data});
-      chrome.action.setBadgeText({text: String(cached.length), tabId});
-    }
-  });
+  const data = await getM3u8s();
+  const cached = data[tabId] || [];
+  if (!cached.includes(url)) {
+    cached.push(url);
+    data[tabId] = cached;
+    await setM3u8s(data);
+    chrome.action.setBadgeText({text: String(cached.length), tabId});
+  }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === 'loading') {
-    chrome.storage.local.get(['m3u8s'], r => {
-      const data = r.m3u8s || {};
-      data[tabId] = [];
-      chrome.storage.local.set({m3u8s: data});
-      chrome.action.setBadgeText({text: '', tabId});
-    });
+    const data = await getM3u8s();
+    data[tabId] = [];
+    await setM3u8s(data);
+    chrome.action.setBadgeText({text: '', tabId});
   }
 });
 
-chrome.tabs.onActivated.addListener(i => {
-  chrome.storage.local.get(['m3u8s'], r => {
-    const data = r.m3u8s || {};
-    const cached = data[i.tabId] || [];
-    chrome.action.setBadgeText({text: cached.length ? String(cached.length) : '', tabId: i.tabId});
-  });
-});
+chrome.tabs.onActivated.addListener(i => updateBadge(i.tabId));
 
-chrome.tabs.onRemoved.addListener(t => {
-  chrome.storage.local.get(['m3u8s'], r => {
-    const data = r.m3u8s || {};
-    delete data[t];
-    chrome.storage.local.set({m3u8s: data});
-  });
+chrome.tabs.onRemoved.addListener(async t => {
+  const data = await getM3u8s();
+  delete data[t];
+  await setM3u8s(data);
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== 'playWithMPVise') return;
 
-  let url = null;
-  let tabId = null;
-
-  // Fallback: if tab is undefined, query the active tab
   if (!tab) {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     tab = activeTab;
   }
-  tabId = tab?.id;
 
-  if (info.linkUrl) {
-    url = info.linkUrl;
-  } else if (info.srcUrl) {
-    url = info.srcUrl;
-  } else {
-    // Page background: use detected master playlist
-    const result = await chrome.storage.local.get(['m3u8s']);
-    const data = result.m3u8s || {};
-    const cached = data[tabId] || [];
-    url = cached.length > 0 ? cached[0] : tab.url;
-  }
-
+  const url = await resolveUrl(info, tab);
   if (!url) {
     notify('No Video', 'No video URL found');
     return;
@@ -153,6 +136,15 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   await sendToServer(url, true);
 });
+
+async function resolveUrl(info, tab) {
+  if (info.linkUrl) return info.linkUrl;
+  if (info.srcUrl) return info.srcUrl;
+  // Page background: use detected master playlist or page URL
+  const data = await getM3u8s();
+  const cached = data[tab.id] || [];
+  return cached.length > 0 ? cached[0] : tab.url;
+}
 
 chrome.action.onClicked.addListener(async (tab) => {
   const serverOk = await checkServer();
@@ -169,8 +161,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     return;
   }
 
-  const result = await chrome.storage.local.get(['m3u8s']);
-  const data = result.m3u8s || {};
+  const data = await getM3u8s();
   const cached = data[tab.id] || [];
 
   if (cached.length > 0) {

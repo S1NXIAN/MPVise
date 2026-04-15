@@ -14,25 +14,21 @@ def handler(sig, frame):
 signal.signal(signal.SIGINT, handler)
 
 def extractStream(url):
-  fallback_used = False
-  extraction_failed = False
-  
   for use_cookies in [True, False]:
     cmd = ['yt-dlp']
     if use_cookies:
       cmd.extend(['--cookies-from-browser', 'chrome'])
     cmd.extend(['-f', 'best', '--no-download', '--print', 'url', '--', url])
-    
+
     try:
       res = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
       candidate = res.stdout.strip()
       if candidate and candidate.startswith('http'):
-        return candidate, True, False
-      extraction_failed = True
-    except:
-      extraction_failed = True
-  
-  return url, fallback_used, extraction_failed
+        return candidate, True
+    except (subprocess.TimeoutExpired, OSError):
+      pass
+
+  return url, False
 
 class Handler(BaseHTTPRequestHandler):
   def do_GET(self):
@@ -58,20 +54,14 @@ class Handler(BaseHTTPRequestHandler):
       return
     
     print(f'[MPVise] Playing: {url}')
-    
+
     if use_fallback:
-      stream_url, fallback_used, extraction_failed = extractStream(url)
-      response = {'ok': 1}
-      if fallback_used:
-        response['fallback'] = True
-      if extraction_failed and not fallback_used:
-        response['failed'] = True
+      stream_url, extracted = extractStream(url)
       self.send_response(200)
       self.send_header('Content-Type', 'application/json')
       self.end_headers()
-      self.wfile.write(json.dumps(response).encode())
-      if fallback_used or not extraction_failed:
-        subprocess.Popen(['mpv', stream_url])
+      self.wfile.write(json.dumps({'ok': 1, 'fallback': extracted}).encode())
+      subprocess.Popen(['mpv', stream_url])
     else:
       self.send_response(200)
       self.send_header('Content-Type', 'application/json')

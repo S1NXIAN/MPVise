@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MPVise - Play on MPV",
-  "version": "1.5",
+  "version": "2.0",
   "description": "Play videos on MPV directly from your browser. Detects HLS master playlists & uses yt-dlp fallback",
   "permissions": ["activeTab", "webRequest", "notifications", "contextMenus", "tabs", "storage"],
   "host_permissions": ["<all_urls>"],
