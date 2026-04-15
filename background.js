@@ -47,25 +47,17 @@ async function sendToServer(url, useFallback = false) {
 }
 
 function createContextMenus() {
-  chrome.contextMenus.create({
-    id: 'play-page',
-    title: 'Play with MPVise',
-    contexts: ['page']
-  });
-  chrome.contextMenus.create({
-    id: 'play-link',
-    title: 'Play with MPVise',
-    contexts: ['link'],
-    targetUrlPatterns: ['*://*/*']
-  });
-  chrome.contextMenus.create({
-    id: 'play-video',
-    title: 'Play with MPVise',
-    contexts: ['video']
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'playWithMPVise',
+      title: 'Play with MPVise',
+      contexts: ['page', 'link', 'video']
+    });
   });
 }
 
 chrome.runtime.onInstalled.addListener(createContextMenus);
+createContextMenus();
 
 chrome.webRequest.onBeforeRequest.addListener(d => {
   if (d.url.includes('.m3u8') && d.tabId > 0) {
@@ -130,14 +122,28 @@ chrome.tabs.onRemoved.addListener(t => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== 'playWithMPVise') return;
+
   let url = null;
-  
-  if (info.menuItemId === 'play-page') {
-    url = tab.url;
-  } else if (info.menuItemId === 'play-link') {
+  let tabId = null;
+
+  // Fallback: if tab is undefined, query the active tab
+  if (!tab) {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tab = activeTab;
+  }
+  tabId = tab?.id;
+
+  if (info.linkUrl) {
     url = info.linkUrl;
-  } else if (info.menuItemId === 'play-video') {
-    url = info.srcUrl || tab.url;
+  } else if (info.srcUrl) {
+    url = info.srcUrl;
+  } else {
+    // Page background: use detected master playlist
+    const result = await chrome.storage.local.get(['m3u8s']);
+    const data = result.m3u8s || {};
+    const cached = data[tabId] || [];
+    url = cached.length > 0 ? cached[0] : tab.url;
   }
 
   if (!url) {
