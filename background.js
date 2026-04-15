@@ -12,10 +12,18 @@ function notify(title, message) {
 }
 
 async function updateBadge(tabId) {
+  const hasStreams = (m3u8Cache[tabId] || []).length > 0;
   await Promise.all([
-    chrome.action.setBadgeText({ tabId, text: (m3u8Cache[tabId] || []).length > 0 ? '!' : '' }),
+    chrome.action.setBadgeText({ tabId, text: hasStreams ? '!' : '' }),
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#34d399' })
   ]);
+}
+
+async function updateYtDlpMenu(tabId) {
+  const hasStreams = (m3u8Cache[tabId] || []).length > 0;
+  try {
+    await chrome.contextMenus.update('play-ytdlp', { visible: hasStreams });
+  } catch (_) {}
 }
 
 // Content-aware Sniffer
@@ -36,6 +44,7 @@ chrome.webRequest.onBeforeRequest.addListener(
           if (!m3u8Cache[tabId].includes(url)) {
             m3u8Cache[tabId].push(url);
             updateBadge(tabId);
+            updateYtDlpMenu(tabId);
           }
         }
       })
@@ -50,7 +59,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') {
     delete m3u8Cache[tabId];
     updateBadge(tabId);
+    updateYtDlpMenu(tabId);
   }
+});
+
+// Sync menu visibility when the user switches tabs
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  updateYtDlpMenu(tabId);
 });
 
 async function sendToServer(url, fallback = true, referer = null) {
@@ -85,16 +100,31 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Play with MPVise',
     contexts: ['link', 'video', 'page']
   });
+
+  // Extension-icon right-click menu — hidden until .m3u8 is detected
+  chrome.contextMenus.create({
+    id: 'play-ytdlp',
+    title: 'Play on yt-dlp',
+    contexts: ['action'],
+    visible: false
+  });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  // "Play on yt-dlp" — always uses yt-dlp fallback
+  if (info.menuItemId === 'play-ytdlp') {
+    sendToServer(tab.url, true, tab.url);
+    return;
+  }
+
+  // "Play with MPVise" — prefer detected stream, else direct play
   const streams = m3u8Cache[tab.id] || [];
   if (streams.length) {
     sendToServer(streams[0], false, tab.url);
     return;
   }
   let targetUrl = info.linkUrl || info.srcUrl || tab.url;
-  if (targetUrl.startsWith('blob:') || targetUrl.startsWith('data:')) targetUrl = tab.url; 
+  if (targetUrl.startsWith('blob:') || targetUrl.startsWith('data:')) targetUrl = tab.url;
   sendToServer(targetUrl, true, tab.url);
 });
 
