@@ -1,21 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "MPVise - Play on MPV",
-  "version": "3.0.0",
-  "description": "Play web videos directly in mpv with automatic HLS stream detection and yt-dlp fallback.",
+  "name": "MPVise",
+  "version": "3.1.0",
+  "description": "Play any web video in mpv. Right-click → Play with MPVise.",
   "permissions": [
     "activeTab",
-    "webRequest",
     "notifications",
     "contextMenus",
     "tabs",
-    "scripting",
-    "storage"
+    "webRequest"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "action": {
     "default_icon": {
@@ -24,7 +21,7 @@
       "48":  "icons/play-button-48.png",
       "128": "icons/play-button-128.png"
     },
-    "default_title": "Play video with MPVise",
+    "default_title": "Play with MPVise",
     "default_popup": ""
   },
   "icons": {
@@ -33,6 +30,5 @@
     "48":  "icons/play-button-48.png",
     "128": "icons/play-button-128.png"
   },
-  "offline_enabled": false,
   "minimum_chrome_version": "108"
 }
