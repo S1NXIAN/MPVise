@@ -1,23 +1,34 @@
 {
   "manifest_version": 3,
-  "name": "MPVise - Play on MPV",
-  "version": "2.0",
-  "description": "Play videos on MPV directly from your browser. Detects HLS master playlists & uses yt-dlp fallback",
-  "permissions": ["activeTab", "webRequest", "notifications", "contextMenus", "tabs", "storage"],
+  "name": "MPVise",
+  "version": "3.1.0",
+  "description": "Play any web video in mpv. Right-click → Play with MPVise.",
+  "permissions": [
+    "activeTab",
+    "notifications",
+    "contextMenus",
+    "tabs",
+    "webRequest"
+  ],
   "host_permissions": ["<all_urls>"],
-  "background": {"service_worker": "background.js"},
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_icon": {
-      "16": "icons/play-button-16.png",
-      "32": "icons/play-button-32.png",
-      "48": "icons/play-button-48.png",
+      "16":  "icons/play-button-16.png",
+      "32":  "icons/play-button-32.png",
+      "48":  "icons/play-button-48.png",
       "128": "icons/play-button-128.png"
-    }
+    },
+    "default_title": "Play with MPVise",
+    "default_popup": ""
   },
   "icons": {
-    "16": "icons/play-button-16.png",
-    "32": "icons/play-button-32.png",
-    "48": "icons/play-button-48.png",
+    "16":  "icons/play-button-16.png",
+    "32":  "icons/play-button-32.png",
+    "48":  "icons/play-button-48.png",
     "128": "icons/play-button-128.png"
-  }
+  },
+  "minimum_chrome_version": "108"
 }
