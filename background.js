@@ -69,18 +69,31 @@ chrome.runtime.onInstalled.addListener(createContextMenus);
 
 chrome.webRequest.onBeforeRequest.addListener(d => {
   if (d.url.includes('.m3u8') && d.tabId > 0) {
-    chrome.storage.local.get(['m3u8s'], r => {
-      const data = r.m3u8s || {};
-      const cached = data[d.tabId] || [];
-      if (!cached.includes(d.url)) {
-        cached.push(d.url);
-        data[d.tabId] = cached;
-        chrome.storage.local.set({m3u8s: data});
-        chrome.action.setBadgeText({text: '1', tabId: d.tabId});
-      }
-    });
+    sniffM3u8(d.url, d.tabId);
   }
 }, {urls: ['<all_urls>']});
+
+async function sniffM3u8(url, tabId) {
+  try {
+    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
+    const text = await resp.text();
+    const head = text.slice(0, 1024);
+    if (!head.includes('#EXT-X-STREAM-INF')) return;
+  } catch {
+    return;
+  }
+
+  chrome.storage.local.get(['m3u8s'], r => {
+    const data = r.m3u8s || {};
+    const cached = data[tabId] || [];
+    if (!cached.includes(url)) {
+      cached.push(url);
+      data[tabId] = cached;
+      chrome.storage.local.set({m3u8s: data});
+      chrome.action.setBadgeText({text: String(cached.length), tabId});
+    }
+  });
+}
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === 'loading') {
