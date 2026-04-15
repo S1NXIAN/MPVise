@@ -341,24 +341,33 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const streams = [...getStreams(tab.id)];
-
   // "Play on yt-dlp" — always passes page URL directly to yt-dlp.
   if (info.menuItemId === 'play-ytdlp') {
     sendToServer(tab.url, true, tab.url, tab.id);
     return;
   }
 
-  // "Play with MPVise" — prefer detected HLS stream, else yt-dlp fallback.
+  // "Play with MPVise" — priority order:
+  //   1. Explicit element target (right-clicked video/link) — honour what the user clicked.
+  //   2. Cached HLS stream — only when right-clicking the page background.
+  //   3. Page URL via yt-dlp — last resort.
+  const explicitUrl = info.srcUrl || info.linkUrl;
+
+  if (explicitUrl && !explicitUrl.startsWith('blob:') && !explicitUrl.startsWith('data:')) {
+    // User right-clicked a specific video or link — play that URL directly.
+    sendToServer(explicitUrl, true, tab.url, tab.id);
+    return;
+  }
+
+  // No specific element — prefer any cached HLS stream on this page.
+  const streams = [...getStreams(tab.id)];
   if (streams.length) {
     sendToServer(streams[0], false, tab.url, tab.id);
     return;
   }
-  let targetUrl = info.linkUrl || info.srcUrl || tab.url;
-  if (targetUrl.startsWith('blob:') || targetUrl.startsWith('data:')) {
-    targetUrl = tab.url;
-  }
-  sendToServer(targetUrl, true, tab.url, tab.id);
+
+  // Nothing detected — try page URL via yt-dlp.
+  sendToServer(tab.url, true, tab.url, tab.id);
 });
 
 // ─── Action Button (icon left-click) ─────────────────────────────────────────
