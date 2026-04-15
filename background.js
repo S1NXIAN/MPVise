@@ -75,10 +75,17 @@ chrome.webRequest.onBeforeRequest.addListener(d => {
 
 async function sniffM3u8(url, tabId) {
   try {
-    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
+    // host_permissions: ["<all_urls>"] grants cross-origin access, bypassing CORS
+    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
     const text = await resp.text();
-    const head = text.slice(0, 1024);
-    if (!head.includes('#EXT-X-STREAM-INF')) return;
+
+    // Master playlists have #EXT-X-STREAM-INF BEFORE any #EXTINF tag.
+    // Media playlists start with #EXTINF immediately.
+    // This prevents false positives from media playlists that contain #EXT-X-MEDIA.
+    const streamIdx = text.indexOf('#EXT-X-STREAM-INF');
+    const extinfIdx = text.indexOf('#EXTINF');
+    const isMaster = streamIdx !== -1 && (extinfIdx === -1 || streamIdx < extinfIdx);
+    if (!isMaster) return;
   } catch {
     return;
   }
