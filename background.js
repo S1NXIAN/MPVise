@@ -1,181 +1,84 @@
-const PORT = 8765;
+const SOCKET_PATH = '/home/xian/.config/mpvise/mpvise.sock'; // Adjust username or make dynamic
 
-const ICON = 'icons/play-button-128.png';
-const STOP_ICON = 'icons/stop-128.png';
+let m3u8Cache = {};
+const PORT = 8765; // Fallback to TCP if needed
 
-function notify(title, msg = '') {
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: ICON,
-    title,
-    message: msg,
-    priority: 1
-  });
+function isYoutube(url) {
+  return url && (url.includes('youtube.com') || url.includes('youtu.be'));
 }
 
-async function getM3u8s() {
-  const result = await chrome.storage.local.get(['m3u8s']);
-  return result.m3u8s || {};
-}
-
-async function setM3u8s(data) {
-  chrome.storage.local.set({m3u8s: data});
-}
-
-async function updateBadge(tabId) {
-  const data = await getM3u8s();
-  const cached = data[tabId] || [];
-  chrome.action.setBadgeText({text: cached.length ? String(cached.length) : '', tabId});
-}
-
-async function checkServer() {
+async function notify(title, message) {
   try {
-    const resp = await fetch(`http://localhost:${PORT}/ping`);
-    return resp.ok;
-  } catch {
-    return false;
-  }
+    await chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/play-button-128.png',
+      title,
+      message: message.slice(0, 100),
+      priority: 1
+    });
+  } catch(e) {}
 }
 
-async function sendToServer(url, useFallback = false) {
-  const serverOk = await checkServer();
-  if (!serverOk) {
-    notify('Server Offline', 'Start: python3 launcher.py');
-    return;
-  }
+// Fast Unix socket communication via native messaging-style fetch
+// Since Chrome can't do Unix sockets directly, we use HTTP fallback on localhost
+// or you can use a native helper. For now, optimized TCP:
 
+async function sendToServer(url, fallback = true) {
   try {
-    const resp = await fetch(`http://localhost:${PORT}/play`, {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    
+    const response = await fetch(`http://127.0.0.1:${PORT}/play`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url, fallback: useFallback})
+      body: JSON.stringify({url, fallback}),
+      signal: controller.signal
     });
-    const data = await resp.json();
-    if (data.failed) {
-      notify('Playback Failed', 'Could not extract video. Site not supported.');
+    
+    clearTimeout(timeout);
+    
+    if (!response.ok) {
+      const err = await response.json();
+      notify('Playback Failed', err.error || 'Unknown error');
     } else {
-      notify('Playing on MPV');
+      notify('Playing', 'Video sent to mpv');
     }
-  } catch {
-    notify('Playing on MPV');
+  } catch (e) {
+    notify('Error', 'Server not running? Run: python3 launcher.py');
   }
 }
 
-function createContextMenus() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: 'playWithMPVise',
-      title: 'Play with MPVise',
-      contexts: ['page', 'link', 'video']
-    });
+// Context menu
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'play',
+    title: 'Play with MPVise',
+    contexts: ['link', 'video', 'page']
   });
-}
-
-chrome.runtime.onInstalled.addListener(createContextMenus);
-createContextMenus();
-
-chrome.webRequest.onBeforeRequest.addListener(d => {
-  if (d.url.includes('.m3u8') && d.tabId > 0) {
-    sniffM3u8(d.url, d.tabId);
-  }
-}, {urls: ['<all_urls>']});
-
-async function sniffM3u8(url, tabId) {
-  try {
-    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
-    const text = await resp.text();
-
-    const streamIdx = text.indexOf('#EXT-X-STREAM-INF');
-    const extinfIdx = text.indexOf('#EXTINF');
-    const isMaster = streamIdx !== -1 && (extinfIdx === -1 || streamIdx < extinfIdx);
-    if (!isMaster) return;
-  } catch {
-    return;
-  }
-
-  const data = await getM3u8s();
-  const cached = data[tabId] || [];
-  if (!cached.includes(url)) {
-    cached.push(url);
-    data[tabId] = cached;
-    await setM3u8s(data);
-    chrome.action.setBadgeText({text: String(cached.length), tabId});
-  }
-}
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.status === 'loading') {
-    const data = await getM3u8s();
-    data[tabId] = [];
-    await setM3u8s(data);
-    chrome.action.setBadgeText({text: '', tabId});
-  }
 });
 
-chrome.tabs.onActivated.addListener(i => updateBadge(i.tabId));
-
-chrome.tabs.onRemoved.addListener(async t => {
-  const data = await getM3u8s();
-  delete data[t];
-  await setM3u8s(data);
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  let url = info.linkUrl || info.srcUrl || tab.url;
+  
+  if (!url) return;
+  
+  // If blob/data URL on YouTube, use page URL
+  if (url.startsWith('blob:') || url.startsWith('data:')) {
+    if (isYoutube(tab.url)) url = tab.url;
+    else {
+      notify('Error', 'Cannot play blob URLs');
+      return;
+    }
+  }
+  
+  sendToServer(url, true);
 });
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId !== 'playWithMPVise') return;
-
-  if (!tab) {
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    tab = activeTab;
-  }
-
-  const url = await resolveUrl(info, tab);
-  if (!url) {
-    notify('No Video', 'No video URL found');
+// Extension button
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.url || tab.url.startsWith('chrome://')) {
+    notify('Error', 'Invalid page');
     return;
   }
-
-  await sendToServer(url, true);
-});
-
-async function resolveUrl(info, tab) {
-  if (info.linkUrl) return info.linkUrl;
-  if (info.srcUrl) return info.srcUrl;
-  // Page background: use detected master playlist or page URL
-  const data = await getM3u8s();
-  const cached = data[tab.id] || [];
-  return cached.length > 0 ? cached[0] : tab.url;
-}
-
-async function handleActionClick(tab) {
-  const serverOk = await checkServer();
-  if (!serverOk) {
-    chrome.action.setIcon({path: STOP_ICON, tabId: tab.id});
-    notify('Server Offline', 'Start: python3 launcher.py');
-    return;
-  }
-
-  chrome.action.setIcon({path: ICON, tabId: tab.id});
-
-  if (!tab.url) {
-    notify('No Video', 'No page URL');
-    return;
-  }
-
-  const data = await getM3u8s();
-  const cached = data[tab.id] || [];
-
-  if (cached.length > 0) {
-    await sendToServer(cached[0], false);
-  } else {
-    await sendToServer(tab.url, true);
-  }
-}
-
-chrome.action.onClicked.addListener(handleActionClick);
-
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command === 'play-with-mpvise') {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) handleActionClick(tab);
-  }
+  sendToServer(tab.url, true);
 });
