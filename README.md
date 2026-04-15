@@ -27,7 +27,7 @@ Browser                        Daemon (127.0.0.1:8765)
                                               └──► mpv
 ```
 
-- **HLS sniffing** — the extension intercepts `.m3u8` network requests and validates them (2 KB `Range` fetch). Confirmed master playlists are cached per tab and sent to mpv directly, without yt-dlp.
+- **HLS sniffing** — the extension intercepts `.m3u8` network requests and validates them with a 2 KB `Range` fetch. Confirmed master playlists are cached per tab and sent to mpv directly, skipping yt-dlp entirely.
 - **Parallel extraction** — when yt-dlp is needed, all configured browser cookie sources are tried simultaneously. The first successful result wins and the rest are cancelled.
 - **Smart URL resolution** — right-clicking a specific link or video plays that URL; clicking the extension icon or page background uses the cached HLS stream if one was detected.
 
@@ -54,9 +54,6 @@ pip install aiohttp
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked** and select the `MPVise` folder
-
-> [!IMPORTANT]
-> Do **not** run any Python files from inside the extension folder before loading it. Python creates a `__pycache__` directory that Chrome will refuse to load. If it appears, delete it: `rm -rf __pycache__`
 
 ### 3. Start the daemon
 
@@ -87,24 +84,7 @@ python3 launcher.py logs -f    # follow log output (tail -f)
 python3 launcher.py            # run in foreground
 ```
 
-## Configuration
-
-The daemon reads `~/.config/mpvise/config.json`. Copy the example to get started:
-
-```bash
-cp config.example.json ~/.config/mpvise/config.json
-```
-
-Key options:
-
-| Key | Default | Description |
-|---|---|---|
-| `port` | `8765` | Port the daemon listens on |
-| `ytdlp_format` | `best[height<=1080]/best` | yt-dlp format selector |
-| `browsers` | `["vivaldi", "chrome", "firefox", "brave"]` | Cookie sources tried in parallel |
-| `ytdlp_timeout` | `30` | Per-attempt timeout in seconds |
-
-You can also override the port at runtime:
+The daemon port defaults to `8765` and can be overridden at runtime:
 
 ```bash
 MPVISE_PORT=9000 python3 launcher.py start
@@ -121,16 +101,10 @@ window-scale=0.4
 geometry=100%:100%
 ```
 
-**Cookies improve success rates** — if a site requires login (Twitch subscriptions, age-gated content), make sure you are signed in with one of the browsers listed in `browsers`. yt-dlp will read cookies from the first browser that has a valid session.
+**Cookies improve success rates** — if a site requires login (Twitch subscriptions, age-gated content), make sure you are signed in with one of the browsers yt-dlp checks (`vivaldi`, `chrome`, `chromium`, `firefox`, `brave`). yt-dlp will use the first browser that has a valid session.
 
 **Keep yt-dlp updated** — site extractors change frequently:
 
 ```bash
 yt-dlp -U
 ```
-
-> [!NOTE]
-> `PYTHONDONTWRITEBYTECODE=1` prevents Python from creating `__pycache__` in the extension directory. Add it to your shell profile to avoid the issue permanently:
-> ```bash
-> echo 'export PYTHONDONTWRITEBYTECODE=1' >> ~/.bashrc
-> ```
