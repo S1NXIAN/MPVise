@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 -B
 import os; os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 """MPVise — daemon manager CLI.
 
