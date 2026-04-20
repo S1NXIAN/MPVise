@@ -3,6 +3,17 @@
 const PORT = 8765;
 const hlsCache = new Map();
 
+const BROWSER_HINT = (() => {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('vivaldi')) return 'vivaldi';
+  if (ua.includes('edg/')) return 'edge';
+  if (ua.includes('brave')) return 'brave';
+  if (ua.includes('opera') || ua.includes('opr/')) return 'opera';
+  if (ua.includes('chrome')) return 'chrome';
+  if (ua.includes('firefox')) return 'firefox';
+  return null;
+})();
+
 // ─── m3u8 Sniffer ────────────────────────────────────────────────
 chrome.webRequest.onBeforeRequest.addListener(
   ({url, tabId}) => {
@@ -63,19 +74,53 @@ async function play(url, referer, tabId = null) {
   }
 
   notify('MPVise', direct ? 'Playing HLS stream…' : 'Resolving…');
+  
+  let notificationId = 'mpvise';
 
   try {
     const resp = await fetch(`http://127.0.0.1:${PORT}/play`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: target, referer, direct}),
-      signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({url: target, referer, direct, hint: BROWSER_HINT}),
     });
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      notify('MPVise — Playing', body.browser ? `${body.browser} cookies` : '');
-    } else {
-      notify('MPVise — Failed', body.error || `HTTP ${resp.status}`);
+
+    if (!resp.body) throw new Error('No response body');
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          const statusMap = {
+            'using_cache': (data) => `Fast-loading ${data.browser} session...`,
+            'racing_browsers': (data) => `Racing ${data.count || (data.browsers ? data.browsers.length : '?')} browsers for cookies...`,
+            'resolving_cookies': (data) => `Resolving cookies in ${data.browser}...`,
+            'testing_browser': (data) => `Checking ${data.browser} cookies...`,
+          };
+          if (event.error) {
+            notify('MPVise — Failed', event.error);
+          } else if (statusMap[event.status]) {
+            notify('MPVise', statusMap[event.status](event));
+          } else if (event.status === 'launching') {
+            notify('MPVise', 'Launching mpv player...');
+          } else if (event.status === 'playing') {
+            const msg = event.browser ? `Playing via ${event.browser} cookies` : (event.direct ? 'Playing direct stream' : 'Playing (no cookies needed)');
+            notify('MPVise', msg);
+          }
+        } catch (e) {
+          console.error('Failed to parse event:', line);
+        }
+      }
     }
   } catch (e) {
     notify('MPVise — Error', e.name === 'AbortError' ? 'Timed out' : e.message);

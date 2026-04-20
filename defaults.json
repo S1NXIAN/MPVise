@@ -1,0 +1,35 @@
+{
+"version": "4.0.0",
+  "server": {
+    "port": 8765,
+    "mpv_socket": "/tmp/mpvise.sock",
+    "mpv_args": [],
+    "ytdlp_format": ""
+  },
+  "browsers": {
+    "config_map": {
+      "google-chrome": "chrome",
+      "chromium": "chromium",
+      "Brave-Browser": "brave",
+      "mozilla": "firefox",
+      "vivaldi": "vivaldi",
+      "microsoft-edge": "edge",
+      "opera": "opera"
+    },
+    "cookie_paths": [
+      "Default/Cookies",
+      "Default/Network/Cookies",
+      "Profiles/Default/Cookies",
+      "cookies.sqlite"
+    ]
+  },
+  "ui": {
+    "status_messages": {
+      "using_cache": "using_cache",
+      "racing": "racing_browsers",
+      "using_hint": "using_hint",
+      "launching": "launching",
+      "playing": "playing"
+    }
+  }
+}

@@ -10,26 +10,27 @@
 
 ---
 
-Right-click any page, link, or video element and choose **Play with MPVise**. The extension hands the URL to a lightweight local daemon, which runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract the stream and opens it in mpv — all without leaving your browser.
+Right-click any page, link, or video element and choose **Play with MPVise**. The extension hands the URL to a lightweight local daemon, which runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract the stream and opens it in mpv — all with real-time status updates in your browser.
 
-Works on [every site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (YouTube, Twitch, Twitter/X, Vimeo, and 1 000+ more). On pages that expose raw HLS streams (`.m3u8`), the daemon is bypassed entirely and the stream goes straight to mpv in under a second.
+Works on [every site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (YouTube, Twitch, Twitter/X, Vimeo, and 1 000+ more). On pages that expose raw HLS streams (`.m3u8`), the stream goes straight to mpv without extraction delay.
 
 ## How it works
 
 ```
 Browser                        Daemon (127.0.0.1:8765)
   │                                    │
-  ├─ webRequest sees .m3u8 ──────────► │ (cached; sent direct)
+  ├─ webRequest sees .m3u8 ──────────► │ (sniffed; direct play)
   │                                    │
   └─ right-click / icon click ────────►│
         URL is a raw stream?  YES ─────► mpv  ⚡ instant
-        URL is a raw stream?  NO  ──────► yt-dlp (parallel browser tries)
+        URL is a raw stream?  NO  ──────► yt-dlp (parallel browser tests)
                                               └──► mpv
 ```
 
-- **HLS sniffing** — the extension intercepts `.m3u8` network requests and validates them with a 2 KB `Range` fetch. Confirmed master playlists are cached per tab and sent to mpv directly, skipping yt-dlp entirely.
-- **Parallel extraction** — when yt-dlp is needed, all configured browser cookie sources are tried simultaneously. The first successful result wins and the rest are cancelled.
-- **Smart URL resolution** — right-clicking a specific link or video plays that URL; clicking the extension icon or page background uses the cached HLS stream if one was detected.
+- **HLS sniffing** — the extension intercepts `.m3u8` network requests and validates them. Confirmed master playlists are cached per tab and sent to mpv with a `direct` flag, skipping yt-dlp.
+- **Parallel extraction** — when yt-dlp is needed, all configured browser cookie sources are tried simultaneously. The daemon streams progress updates (e.g., "Checking Chrome cookies...") back to your browser in real-time.
+- **Browser Hinting** — the extension automatically detects your current browser (Vivaldi, Brave, Edge, etc.) and hints the daemon to prioritize it, ensuring the fastest possible cookie extraction.
+- **Smart configuration** — settings are merged from defaults, `~/.config/mpvise/mpvise.conf`, and environment variables.
 
 ## Requirements
 
@@ -58,7 +59,7 @@ pip install aiohttp
 ### 3. Start the daemon
 
 ```bash
-python3 launcher.py start
+./mpvise --start
 ```
 
 That's it. Right-click any page and choose **Play with MPVise**.
@@ -72,22 +73,31 @@ That's it. Right-click any page and choose **Play with MPVise**.
 | Right-click a video element → *Play with MPVise* | Plays the video's source |
 | Click the extension icon | Plays the current tab |
 
+### Configuration
+
+The configuration file `~/.config/mpvise/mpvise.conf` is **automatically created** on your first run. It uses a standard `key=value` format (like `mpv.conf`).
+
+Example:
+```ini
+port=8765
+mpv_args=--fs --ontop
+ytdlp_format=bestvideo+bestaudio/best
+browsers=(chrome, vivaldi, firefox)
+```
+
+**Environment Overrides:**
+- `MPVISE_PORT`: Change the daemon port (default: 8765)
+- `MPVISE_MPV_SOCKET`: Path to mpv IPC socket
+- `MPVISE_BROWSERS`: Comma-separated list of browsers to check for cookies
+
 ### Daemon CLI
 
 ```bash
-python3 launcher.py start      # start in background
-python3 launcher.py stop       # stop
-python3 launcher.py restart    # restart
-python3 launcher.py status     # show status + recent log
-python3 launcher.py logs       # print last 100 log lines
-python3 launcher.py logs -f    # follow log output (tail -f)
-python3 launcher.py            # run in foreground
-```
-
-The daemon port defaults to `8765` and can be overridden at runtime:
-
-```bash
-MPVISE_PORT=9000 python3 launcher.py start
+./mpvise --start      # start in background
+./mpvise --stop       # stop
+./mpvise --status     # show status
+./mpvise --logs       # view recent logs
+./mpvise --run        # run in foreground (debug)
 ```
 
 ## Tips
@@ -100,8 +110,6 @@ border=no
 window-scale=0.4
 geometry=100%:100%
 ```
-
-**Cookies improve success rates** — if a site requires login (Twitch subscriptions, age-gated content), make sure you are signed in with one of the browsers yt-dlp checks (`vivaldi`, `chrome`, `chromium`, `firefox`, `brave`). yt-dlp will use the first browser that has a valid session.
 
 **Keep yt-dlp updated** — site extractors change frequently:
 

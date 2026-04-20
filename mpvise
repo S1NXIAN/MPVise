@@ -1,17 +1,22 @@
 #!/usr/bin/env -S python3 -OO
 """MPVise - Play web videos in mpv"""
 
-import argparse, asyncio, errno, json, os, signal, sqlite3, stat, subprocess
+import argparse, asyncio, errno, json, os, shutil, signal, sqlite3, stat, subprocess
 import sys, time, urllib.parse
 from pathlib import Path
 
 # ═══════════════════════════════════════════════════════════════════
-# VERSION (dynamic - from manifest.json)
+# DATA LOADER
 # ═══════════════════════════════════════════════════════════════════
-def get_version():
-    return json.loads(Path(__file__).parent.joinpath("manifest.json").read_text())["version"]
+def load_internal_defaults():
+    path = Path(__file__).parent / "defaults.json"
+    if not path.exists():
+        # Fallback if file is missing (minimal safety)
+        return {"server": {"port": 8765}, "browsers": {"config_map": {}, "cookie_paths": []}}
+    return json.loads(path.read_text())
 
-VERSION = get_version()
+DATA = load_internal_defaults()
+VERSION = DATA.get("version", "4.0.0")
 
 # ═══════════════════════════════════════════════════════════════════
 # CONFIG
@@ -21,19 +26,50 @@ CONFIG_DIR = HOME / ".config" / "mpvise"
 PID_FILE = CONFIG_DIR / "daemon.pid"
 LOG_FILE = CONFIG_DIR / "daemon.log"
 CACHE_FILE = CONFIG_DIR / "browser_cache.json"
-MPV_SOCKET = "/tmp/mpvise.sock"
-PORT = 8765
+CONFIG_FILE = CONFIG_DIR / "mpvise.conf"
 
-BROWSER_CONFIG_MAP = {
-    "google-chrome": "chrome",
-    "chromium": "chromium",
-    "Brave-Browser": "brave",
-    "mozilla": "firefox",
-    "vivaldi": "vivaldi",
-    "microsoft-edge": "edge",
-    "opera": "opera",
-}
-DEFAULT_BROWSERS = ["chrome", "chromium", "brave", "firefox", "vivaldi", "edge"]
+def load_config():
+    config = DATA["server"].copy()
+    config["browsers"] = []
+    
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith(("#", ";")):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key, val = key.strip(), val.strip()
+                        
+                        # Handle shell-style lists: (a, b, c) -> a, b, c
+                        val = val.strip("()")
+                        
+                        if key == "port": 
+                            config["port"] = int(val)
+                        elif key == "mpv_args": 
+                            config["mpv_args"] = val.replace(",", " ").split()
+                        elif key == "browsers": 
+                            # Clean up double commas and split
+                            raw_browsers = val.replace(",,", ",").split(",")
+                            config["browsers"] = [b.strip() for b in raw_browsers if b.strip()]
+                        else: 
+                            config[key] = val
+        except Exception as e:
+            print(f"Error loading mpvise.conf: {e}")
+
+    # Environment overrides
+    if os.environ.get("MPVISE_PORT"): config["port"] = int(os.environ["MPVISE_PORT"])
+    if os.environ.get("MPVISE_MPV_SOCKET"): config["mpv_socket"] = os.environ["MPVISE_MPV_SOCKET"]
+    if os.environ.get("MPVISE_BROWSERS"): config["browsers"] = [b.strip() for b in os.environ["MPVISE_BROWSERS"].split(",")]
+    if os.environ.get("MPVISE_YTDLP_FORMAT"): config["ytdlp_format"] = os.environ["MPVISE_YTDLP_FORMAT"]
+
+    return config
+
+CONF = load_config()
+PORT = CONF["port"]
+MPV_SOCKET = CONF["mpv_socket"]
 
 # ═══════════════════════════════════════════════════════════════════
 # MODULE: Utils
@@ -82,6 +118,23 @@ def check_dependencies():
 
 def setup_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        try:
+            # Try to copy the template from the repo if it exists
+            template = Path(__file__).parent / "mpvise-default.conf"
+            if template.exists():
+                shutil.copy2(template, CONFIG_FILE)
+                print(f"Config initialized: {CONFIG_FILE}")
+            else:
+                # Fallback to generating a basic text config
+                content = "# MPVise Config\n"
+                for k, v in DATA["server"].items():
+                    if isinstance(v, list): v = " ".join(v) if k == "mpv_args" else ",".join(v)
+                    content += f"{k}={v}\n"
+                CONFIG_FILE.write_text(content)
+                print(f"Generated basic config at {CONFIG_FILE}")
+        except Exception as e:
+            print(f"Warning: Could not setup mpvise.conf: {e}")
 
 def log(msg):
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -92,12 +145,25 @@ def log(msg):
 # MODULE: Browser Detection
 # ═══════════════════════════════════════════════════════════════════
 
-def scan_config_browsers():
+def scan_config_browsers(only_allow=None):
     config_dir = Path.home() / ".config"
     found = []
-    for dir_name, browser in BROWSER_CONFIG_MAP.items():
-        if (config_dir / dir_name).exists():
-            found.append(browser)
+    check_paths = DATA["browsers"]["cookie_paths"]
+    
+    # Only iterate through browsers the user actually cares about
+    for dir_name, browser in DATA["browsers"]["config_map"].items():
+        if only_allow and browser not in only_allow:
+            continue
+            
+        base_path = config_dir / dir_name
+        if base_path.exists():
+            is_valid = False
+            for p in check_paths:
+                if any(base_path.rglob(p)):
+                    is_valid = True
+                    break
+            if is_valid:
+                found.append(browser)
     return found
 
 def get_cached_browser():
@@ -105,7 +171,7 @@ def get_cached_browser():
         return None
     try:
         cached = json.loads(CACHE_FILE.read_text())
-        current = scan_config_browsers()
+        current = scan_config_browsers(only_allow=CONF["browsers"])
         if cached.get("browser") in current:
             return cached.get("browser")
         CACHE_FILE.unlink()
@@ -116,26 +182,58 @@ def get_cached_browser():
 def save_browser_cache(browser):
     CACHE_FILE.write_text(json.dumps({"browser": browser, "time": time.time()}))
 
-async def detect_and_test_browser(url, timeout=5):
+async def detect_and_test_browser(url, progress_cb=None, hint=None, timeout=5):
     cached = get_cached_browser()
     if cached:
+        if progress_cb: await progress_cb({"status": "using_cache", "browser": cached})
         return cached
 
-    found = scan_config_browsers()
-    priority = found + [b for b in DEFAULT_BROWSERS if b not in found]
+    # Targeted Scan: Only look for browsers listed in the user's config
+    found = scan_config_browsers(only_allow=CONF["browsers"])
+    priority = [b for b in CONF["browsers"] if b in found]
+    
+    # If a hint is provided (active browser), prioritize it within the allowed list
+    if hint and hint in priority:
+        priority.remove(hint)
+        priority.insert(0, hint)
 
-    for browser in priority[:3]:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--cookies-from-browser", browser, "--list-subs", url,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
+    targets = priority[:4] # Race up to 4 allowed browsers
+    if progress_cb:
+        if len(targets) == 1:
+            await progress_cb({"status": "resolving_cookies", "browser": targets[0].capitalize()})
+        else:
+            await progress_cb({"status": "racing_browsers", "count": len(targets)})
+
+    async def test_one(browser):
         try:
+            proc = await asyncio.create_subprocess_exec(
+                "yt-dlp", "--cookies-from-browser", browser, "--list-subs", url,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
             await asyncio.wait_for(proc.communicate(), timeout=timeout)
             if proc.returncode == 0:
-                save_browser_cache(browser)
                 return browser
-        except asyncio.TimeoutError:
-            proc.kill()
+        except:
+            pass
+        return None
+
+    # Create tasks for all browsers and wait for the first SUCCESS
+    tasks = [asyncio.create_task(test_one(b)) for b in targets]
+    
+    done_browser = None
+    for coro in asyncio.as_completed(tasks):
+        res = await coro
+        if res:
+            done_browser = res
+            break
+    
+    # Cancel remaining tasks
+    for t in tasks:
+        if not t.done(): t.cancel()
+    
+    if done_browser:
+        save_browser_cache(done_browser)
+        return done_browser
 
     return None
 
@@ -151,7 +249,13 @@ def get_pid():
     except:
         return None
 
+def is_port_in_use(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
 def is_running(pid=None):
+    """Checks if a specific PID is actually active in the process table."""
     if pid is None:
         return False
     try:
@@ -160,20 +264,14 @@ def is_running(pid=None):
     except OSError:
         return False
 
-async def start_daemon():
-    setup_config()
-    if get_pid() and is_running(get_pid()):
-        print(f"Already running (PID {get_pid()})")
+def start_daemon():
+    # Final safety check: block if port is busy or PID is active
+    pid = get_pid()
+    if (pid and is_running(pid)) or is_port_in_use(PORT):
+        print(f"Already running" + (f" (PID {pid})" if pid else f" on port {PORT}"))
         return
 
-    for d in Path(".").glob("**/__pycache__"):
-        for f in d.glob("*.pyc"):
-            f.unlink(missing_ok=True)
-        try:
-            d.rmdir()
-        except:
-            pass
-
+    setup_config()
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     disp = get_display_env()
     if disp:
@@ -190,18 +288,53 @@ async def start_daemon():
     PID_FILE.write_text(str(proc.pid))
     print(f"Started (PID {proc.pid})")
 
-async def stop_daemon():
+async def stop_daemon(silent=False):
     pid = get_pid()
+    
+    # Priority Recovery: If port is busy, find WHO is using it (ignoring the PID file)
+    if is_port_in_use(PORT):
+        try:
+            res = subprocess.run(["fuser", f"{PORT}/tcp"], capture_output=True, text=True)
+            if res.returncode == 0:
+                found_pid = int(res.stdout.strip().split()[-1])
+                if pid and found_pid != pid:
+                    if not silent: print(f"Port {PORT} busy by ghost PID {found_pid}. Overriding.")
+                pid = found_pid
+        except:
+            pass
+
     if not pid or not is_running(pid):
-        print("Not running")
+        if not silent: print("Not running")
         return
+
     try:
+        print(f"Stopping PID {pid}...")
         os.kill(pid, signal.SIGTERM)
-        print("Stopped")
-    except:
-        print("Failed to stop")
-    finally:
+        
+        # Wait up to 2 seconds for it to exit
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if not is_running(pid):
+                PID_FILE.unlink(missing_ok=True)
+                print("Stopped")
+                return
+        
+        # Still alive? Force it.
+        print("Daemon is stubborn. Using SIGKILL...")
+        os.kill(pid, signal.SIGKILL)
+        await asyncio.sleep(0.2)
         PID_FILE.unlink(missing_ok=True)
+        print("Stopped (forced)")
+    except Exception as e:
+        # If the process is already gone, we can safely clean up
+        if not is_running(pid):
+            PID_FILE.unlink(missing_ok=True)
+            if not is_port_in_use(PORT):
+                print("Cleaned up stale PID file.")
+            else:
+                print(f"Process {pid} is gone, but port {PORT} is still busy.")
+        else:
+            print(f"Error stopping daemon: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
 # MODULE: HTTP Server
@@ -217,30 +350,46 @@ def get_mpv_env():
 
 async def handle_play(req):
     from aiohttp import web
+    
+    resp = web.StreamResponse(status=200, reason='OK', headers={'Content-Type': 'application/x-ndjson'})
+    await resp.prepare(req)
+
+    async def send_event(data):
+        await resp.write(json.dumps(data).encode() + b"\n")
 
     try:
         data = await req.json()
     except:
-        return web.json_response({"error": "bad request"}, status=400)
+        await send_event({"error": "bad request"})
+        return resp
 
     url = (data.get("url") or "").strip()
     direct = data.get("direct", False)
+    hint = data.get("hint")
 
     if not url.startswith("http"):
-        return web.json_response({"error": "invalid url"}, status=400)
+        await send_event({"error": "invalid url"})
+        return resp
 
-    log(f"PLAY: {url[:60]}")
+    log(f"PLAY: {url[:60]} (hint: {hint})")
 
     browser = None
     if not direct:
-        browser = await detect_and_test_browser(url)
+        browser = await detect_and_test_browser(url, progress_cb=send_event, hint=hint)
 
     cmd = ["mpv"]
+    if CONF["mpv_socket"]:
+        cmd.append(f"--input-ipc-server={CONF['mpv_socket']}")
+    if CONF["ytdlp_format"]:
+        cmd.append(f"--ytdl-format={CONF['ytdlp_format']}")
+    if CONF["mpv_args"]:
+        cmd.extend(CONF["mpv_args"])
     if browser:
         cmd.append(f"--cookies-from-browser={browser}")
     cmd.append(url)
 
     try:
+        await send_event({"status": "launching", "browser": browser})
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,
@@ -248,10 +397,12 @@ async def handle_play(req):
             stderr=asyncio.subprocess.DEVNULL,
             env=get_mpv_env()
         )
-        # Don't wait - let mpv play and keep daemon running
-        return web.json_response({"ok": True, "browser": browser})
+        await send_event({"status": "playing", "ok": True, "browser": browser, "direct": direct})
     except FileNotFoundError:
-        return web.json_response({"error": "mpv not found"}, status=503)
+        await send_event({"error": "mpv not found"})
+    
+    await resp.write_eof()
+    return resp
 
 async def main():
     from aiohttp import web
@@ -463,7 +614,7 @@ if __name__ == "__main__":
 
     # Command handlers (first wins)
     if args.start:
-        asyncio.run(start_daemon())
+        start_daemon()
     elif args.stop:
         asyncio.run(stop_daemon())
     elif args.status:
@@ -474,9 +625,12 @@ if __name__ == "__main__":
             print("Stopped")
     elif args.restart:
         async def _restart():
-            await stop_daemon()
-            await asyncio.sleep(0.5)
-            await start_daemon()
+            await stop_daemon(silent=True)
+            # Wait for port to clear (up to 2s)
+            for _ in range(20):
+                if not is_port_in_use(PORT): break
+                await asyncio.sleep(0.1)
+            start_daemon()
         asyncio.run(_restart())
     elif args.logs:
         if LOG_FILE.exists():
@@ -493,6 +647,11 @@ if __name__ == "__main__":
         else:
             print("No logs to clear")
     elif args.run:
+        if is_port_in_use(PORT):
+            pid = get_pid()
+            print(f"Error: Port {PORT} is already in use" + (f" (PID {pid})." if pid else "."))
+            print("Run './mpvise --stop' before running in foreground.")
+            sys.exit(1)
         dep = check_dependencies()
         if dep:
             print(dep)
@@ -500,6 +659,10 @@ if __name__ == "__main__":
         asyncio.run(main())
     else:
         # Default: run server (for extension compatibility)
+        if is_port_in_use(PORT):
+            pid = get_pid()
+            print(f"Already running" + (f" (PID {pid})." if pid else f" on port {PORT}."))
+            sys.exit(0)
         dep = check_dependencies()
         if dep:
             print(dep)
