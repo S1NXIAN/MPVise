@@ -1,0 +1,507 @@
+#!/usr/bin/env -S python3 -OO
+"""MPVise - Play web videos in mpv"""
+
+import argparse, asyncio, errno, json, os, signal, sqlite3, stat, subprocess
+import sys, time, urllib.parse
+from pathlib import Path
+
+# ═══════════════════════════════════════════════════════════════════
+# VERSION (dynamic - from manifest.json)
+# ═══════════════════════════════════════════════════════════════════
+def get_version():
+    return json.loads(Path(__file__).parent.joinpath("manifest.json").read_text())["version"]
+
+VERSION = get_version()
+
+# ═══════════════════════════════════════════════════════════════════
+# CONFIG
+# ═══════════════════════════════════════════════════════════════════
+HOME = Path.home()
+CONFIG_DIR = HOME / ".config" / "mpvise"
+PID_FILE = CONFIG_DIR / "daemon.pid"
+LOG_FILE = CONFIG_DIR / "daemon.log"
+CACHE_FILE = CONFIG_DIR / "browser_cache.json"
+MPV_SOCKET = "/tmp/mpvise.sock"
+PORT = 8765
+
+BROWSER_CONFIG_MAP = {
+    "google-chrome": "chrome",
+    "chromium": "chromium",
+    "Brave-Browser": "brave",
+    "mozilla": "firefox",
+    "vivaldi": "vivaldi",
+    "microsoft-edge": "edge",
+    "opera": "opera",
+}
+DEFAULT_BROWSERS = ["chrome", "chromium", "brave", "firefox", "vivaldi", "edge"]
+
+# ═══════════════════════════════════════════════════════════════════
+# MODULE: Utils
+# ═══════════════════════════════════════════════════════════════════
+
+def get_display_env():
+    """Auto-detect display environment (Wayland > X11 > None)"""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return {"WAYLAND_DISPLAY": os.environ["WAYLAND_DISPLAY"], "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "")}
+    if os.environ.get("DISPLAY"):
+        return {"DISPLAY": os.environ["DISPLAY"]}
+    return None
+
+def detect_distro():
+    """Detect Linux distro for package manager"""
+    for path in ["/etc/os-release", "/etc/arch-release", "/etc/debian_version", "/etc/fedora-release", "/etc/SuSE-release"]:
+        if Path(path).exists():
+            content = Path(path).read_text().lower()
+            if "arch" in content: return "pacman"
+            if "debian" in content or "ubuntu" in content: return "apt"
+            if "fedora" in content or "rhel" in content: return "dnf"
+            if "sles" in content or "opensuse" in content: return "zypper"
+    for cmd in ["pacman", "apt", "dnf", "zypper", "apk"]:
+        if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+            return cmd
+    return "apt"
+
+def check_dependencies():
+    """Check mpv and yt-dlp, return install command if missing"""
+    distro = detect_distro()
+    pkg_mgr = {
+        "pacman": "sudo pacman -S", "apt": "sudo apt install", "dnf": "sudo dnf install",
+        "zypper": "sudo zypper in", "apk": "sudo apk add"
+    }.get(distro, "sudo apt install")
+
+    mpv = subprocess.run(["which", "mpv"], capture_output=True).returncode
+    ytdlp = subprocess.run(["which", "yt-dlp"], capture_output=True).returncode
+
+    if mpv != 0 and ytdlp != 0:
+        return f"mpv & yt-dlp not found. Install with: {pkg_mgr} mpv yt-dlp"
+    if mpv != 0:
+        return f"mpv not found. Install with: {pkg_mgr} mpv"
+    if ytdlp != 0:
+        return f"yt-dlp not found. Install with: {pkg_mgr} yt-dlp"
+    return None
+
+def setup_config():
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+def log(msg):
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
+# ═══════════════════════════════════════════════════════════════════
+# MODULE: Browser Detection
+# ═══════════════════════════════════════════════════════════════════
+
+def scan_config_browsers():
+    config_dir = Path.home() / ".config"
+    found = []
+    for dir_name, browser in BROWSER_CONFIG_MAP.items():
+        if (config_dir / dir_name).exists():
+            found.append(browser)
+    return found
+
+def get_cached_browser():
+    if not CACHE_FILE.exists():
+        return None
+    try:
+        cached = json.loads(CACHE_FILE.read_text())
+        current = scan_config_browsers()
+        if cached.get("browser") in current:
+            return cached.get("browser")
+        CACHE_FILE.unlink()
+    except:
+        pass
+    return None
+
+def save_browser_cache(browser):
+    CACHE_FILE.write_text(json.dumps({"browser": browser, "time": time.time()}))
+
+async def detect_and_test_browser(url, timeout=5):
+    cached = get_cached_browser()
+    if cached:
+        return cached
+
+    found = scan_config_browsers()
+    priority = found + [b for b in DEFAULT_BROWSERS if b not in found]
+
+    for browser in priority[:3]:
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--cookies-from-browser", browser, "--list-subs", url,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if proc.returncode == 0:
+                save_browser_cache(browser)
+                return browser
+        except asyncio.TimeoutError:
+            proc.kill()
+
+    return None
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE: Daemon Management
+# ═══════════════════════════════════════════════════════════════════
+
+def get_pid():
+    if not PID_FILE.exists():
+        return None
+    try:
+        return int(PID_FILE.read_text().strip())
+    except:
+        return None
+
+def is_running(pid=None):
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+async def start_daemon():
+    setup_config()
+    if get_pid() and is_running(get_pid()):
+        print(f"Already running (PID {get_pid()})")
+        return
+
+    for d in Path(".").glob("**/__pycache__"):
+        for f in d.glob("*.pyc"):
+            f.unlink(missing_ok=True)
+        try:
+            d.rmdir()
+        except:
+            pass
+
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    disp = get_display_env()
+    if disp:
+        env.update(disp)
+
+    proc = subprocess.Popen(
+        ["python3", __file__, "-r"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True
+    )
+    PID_FILE.write_text(str(proc.pid))
+    print(f"Started (PID {proc.pid})")
+
+async def stop_daemon():
+    pid = get_pid()
+    if not pid or not is_running(pid):
+        print("Not running")
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print("Stopped")
+    except:
+        print("Failed to stop")
+    finally:
+        PID_FILE.unlink(missing_ok=True)
+
+# ═══════════════════════════════════════════════════════════════════
+# MODULE: HTTP Server
+# ═══════════════════════════════════════════════════════════
+
+def get_mpv_env():
+    """Get environment with display vars for mpv"""
+    env = {**os.environ}
+    disp = get_display_env()
+    if disp:
+        env.update(disp)
+    return env
+
+async def handle_play(req):
+    from aiohttp import web
+
+    try:
+        data = await req.json()
+    except:
+        return web.json_response({"error": "bad request"}, status=400)
+
+    url = (data.get("url") or "").strip()
+    direct = data.get("direct", False)
+
+    if not url.startswith("http"):
+        return web.json_response({"error": "invalid url"}, status=400)
+
+    log(f"PLAY: {url[:60]}")
+
+    browser = None
+    if not direct:
+        browser = await detect_and_test_browser(url)
+
+    cmd = ["mpv"]
+    if browser:
+        cmd.append(f"--cookies-from-browser={browser}")
+    cmd.append(url)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=get_mpv_env()
+        )
+        # Don't wait - let mpv play and keep daemon running
+        return web.json_response({"ok": True, "browser": browser})
+    except FileNotFoundError:
+        return web.json_response({"error": "mpv not found"}, status=503)
+
+async def main():
+    from aiohttp import web
+
+    setup_config()
+    log("MPVise started")
+    PID_FILE.write_text(str(os.getpid()))
+
+    app = web.Application()
+    app.router.add_post("/play", handle_play)
+    app.router.add_get("/ping", lambda r: web.json_response({"ok": True}))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", PORT)
+    await site.start()
+
+    print(f"MPVise running on 127.0.0.1:{PORT}")
+
+    loop = asyncio.get_running_loop()
+    stop = loop.create_future()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop.set_result, sig)
+        except NotImplementedError:
+            pass
+
+    try:
+        await stop
+    finally:
+        log("Stopped")
+        PID_FILE.unlink(missing_ok=True)
+
+# ═══════════════════════════════════════════════════════════════════
+# CLI Entry Point
+# ═══════════════════════════════════════════════════════════════════
+
+HELP = """
+MPVISE(1)                    MPVise Manual                   MPVISE(1)
+
+NAME
+       mpvise - Play web videos in mpv from your browser
+
+SYNOPSIS
+       mpvise [FLAGS] [--option]
+
+DESCRIPTION
+       MPVise is a Chrome/Chromium extension that lets you play any web
+       video directly in mpv. Right-click on a video page or use the
+       extension icon to play.
+
+FLAGS
+       -h, --help           Show this detailed manual
+       -v, --version       Show version
+       -S, --start        Start daemon
+       -T, --stop        Stop daemon
+       -s, --status      Check status
+       -R, --restart     Restart daemon (stop + start)
+       -l, --logs        View daemon logs (last 2000 chars)
+       -c, --clear-logs   Clear daemon logs
+       -r, --run         Run daemon in foreground (debug mode)
+       -p, --ping        Health check
+
+       Default: Run daemon (for extension compatibility)
+
+CONFIG FILES
+       ~/.config/mpvise/
+           daemon.pid          PID file
+           daemon.log          Daemon logs
+           browser_cache.json Cached browser preference
+
+BROWSER AUTO-DETECTION
+       MPVise automatically detects browsers from ~/.config/
+       Priority: found browsers > chrome > chromium > brave >
+       firefox > vivaldi > edge
+
+       When a video requires login, MPVise will attempt to
+       use cookies from detected browsers automatically.
+
+       Cache location: ~/.config/mpvise/browser_cache.json
+
+DISPLAY ENVIRONMENTS
+       Auto-detected in order:
+       1. WAYLAND_DISPLAY (KDE, GNOME, Sway)
+       2. DISPLAY (X11)
+       3. Error if neither found
+
+DEPENDENCY CHECK
+       Required: mpv, yt-dlp
+
+       On missing dependencies, MPVise will suggest the correct
+       install command for your distro:
+       - Arch:       sudo pacman -S mpv yt-dlp
+       - Debian/Ubuntu: sudo apt install mpv yt-dlp
+       - Fedora:     sudo dnf install mpv yt-dlp
+
+USAGE
+       Start daemon:
+           mpvise -S  or  mpvise --start
+
+       Check status:
+           mpvise -s  or  mpvise --status
+
+       View logs:
+           mpvise -l  or  mpvise --logs
+
+       Show version:
+           mpvise -v  or  mpvise --version
+
+       Show help:
+           mpvise -h  or  mpvise --help  or  mpvise ?
+
+       Play a video (in browser):
+           Right-click → "Play with MPVise"
+
+       Or click the extension icon on a video page.
+
+EXIT CODES
+       0   Success
+       1   Error (missing deps, invalid args, etc.)
+
+EXAMPLES
+       mpvise -S              # Start daemon
+       mpvise --start        # Start daemon (long form)
+       mpvise -s             # Check if running
+       mpvise --status       # Check if running (long form)
+       mpvise -l             # View recent logs
+       mpvise --logs        # View recent logs (long form)
+       mpvise -R             # Restart daemon
+       mpvise --restart     # Restart daemon (long form)
+       mpvise -p             # Quick health check
+       mpvise --ping        # Quick health check (long form)
+       mpvise -v             # Show version
+       mpvise --version     # Show version (long form)
+       mpvise -h             # Show this manual
+       mpvise --help        # Show this manual (long form)
+
+ENVIRONMENT
+       DISPLAY          X11 display (auto-detected)
+       WAYLAND_DISPLAY  Wayland display (auto-detected)
+       XDG_RUNTIME_DIR Session directory (auto-detected)
+
+FILES
+       /usr/bin/mpvise     Main executable
+       ~/.config/mpvise/   Configuration directory
+       ~/mpvise/        (if running from source)
+
+BUGS
+       Report issues at: https://github.com/anomalyco/mpvise
+
+AUTHOR
+       Written by MPVise Contributors
+
+MPVISE                     vVERSION                    MPVISE(1)
+""".replace("VERSION", VERSION)
+
+# ═══════════════════════════════════════════════════════════════════
+# CLI Entry Point
+# ═══════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    # Handle help flags before argparse
+    if any(arg in sys.argv for arg in ["-h", "--help", "?", "-?"]):
+        print(HELP)
+        sys.exit(0)
+
+    # Default: run server if no arguments (but check if already running first)
+    if len(sys.argv) == 1:
+        pid = get_pid()
+        if pid and is_running(pid):
+            print(f"Already running (PID {pid})")
+            sys.exit(0)
+        dep = check_dependencies()
+        if dep:
+            print(dep)
+            sys.exit(1)
+        asyncio.run(main())
+        sys.exit(0)
+
+    # Flag-based arguments (global)
+    parser = argparse.ArgumentParser(
+        prog="mpvise",
+        description="Play web videos in mpv",
+        add_help=False,
+        usage="mpvise [-h] [-v] [-S T s R l r p] [--help|--version|--start|--stop|--status|--restart|--logs|--run|--ping]"
+    )
+    parser.add_argument("-h", "--help", action="store_true", help="Show detailed manual")
+    parser.add_argument("-v", "--version", action="store_true", help="Show version")
+    parser.add_argument("-S", "--start", action="store_true", help="Start daemon")
+    parser.add_argument("-T", "--stop", action="store_true", help="Stop daemon")
+    parser.add_argument("-s", "--status", action="store_true", help="Check status")
+    parser.add_argument("-R", "--restart", action="store_true", help="Restart daemon")
+    parser.add_argument("-l", "--logs", action="store_true", help="View logs")
+    parser.add_argument("-r", "--run", action="store_true", help="Run in foreground")
+    parser.add_argument("-p", "--ping", action="store_true", help="Health check")
+    parser.add_argument("-c", "--clear-logs", action="store_true", help="Clear daemon logs")
+
+    args = parser.parse_args()
+
+    # Version handler (global - check first)
+    if args.version:
+        print(f"mpvise v{VERSION}")
+        sys.exit(0)
+
+    # Help handler
+    if args.help:
+        print(HELP)
+        sys.exit(0)
+
+    # Command handlers (first wins)
+    if args.start:
+        asyncio.run(start_daemon())
+    elif args.stop:
+        asyncio.run(stop_daemon())
+    elif args.status:
+        pid = get_pid()
+        if pid and is_running(pid):
+            print(f"Running (PID {pid})")
+        else:
+            print("Stopped")
+    elif args.restart:
+        async def _restart():
+            await stop_daemon()
+            await asyncio.sleep(0.5)
+            await start_daemon()
+        asyncio.run(_restart())
+    elif args.logs:
+        if LOG_FILE.exists():
+            print(LOG_FILE.read_text()[-2000:])
+    elif args.ping:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        print("Running" if sock.connect_ex(("127.0.0.1", PORT)) == 0 else "Stopped")
+    elif args.clear_logs:
+        if LOG_FILE.exists():
+            LOG_FILE.write_text("")
+            print("Logs cleared")
+        else:
+            print("No logs to clear")
+    elif args.run:
+        dep = check_dependencies()
+        if dep:
+            print(dep)
+            sys.exit(1)
+        asyncio.run(main())
+    else:
+        # Default: run server (for extension compatibility)
+        dep = check_dependencies()
+        if dep:
+            print(dep)
+            sys.exit(1)
+        asyncio.run(main())

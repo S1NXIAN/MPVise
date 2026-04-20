@@ -1,54 +1,42 @@
 'use strict';
 
 const PORT = 8765;
-
-// ─── m3u8 Sniffer ─────────────────────────────────────────────────────────────
-// Intercepts network requests to detect HLS master playlists.
-// These are passed directly to mpv (no yt-dlp needed — instant playback).
-
-/** tabId → Set<string> of confirmed master playlist URLs */
 const hlsCache = new Map();
 
+// ─── m3u8 Sniffer ────────────────────────────────────────────────
 chrome.webRequest.onBeforeRequest.addListener(
-  ({ url, tabId }) => {
-    if (tabId < 1 || !url.includes('.m3u8')) return;
-    // Fetch only first 2 KB to confirm it's a master playlist
-    fetch(url, {
-      headers: { Range: 'bytes=0-2047' },
-      signal:  AbortSignal.timeout(4000),
-    })
+  ({url, tabId}) => {
+    if (!tabId || !url.includes('.m3u8')) return;
+    fetch(url, {headers: {Range: 'bytes=0-2048'}, signal: AbortSignal.timeout(4000)})
       .then(r => r.text())
       .then(text => {
-        // Master playlists contain stream variant entries; segment playlists don't.
-        if (!text.includes('#EXT-X-STREAM-INF')) return;
-        if (!hlsCache.has(tabId)) hlsCache.set(tabId, new Set());
-        hlsCache.get(tabId).add(url);
+        if (text.includes('#EXT-X-STREAM-INF')) {
+          if (!hlsCache.has(tabId)) hlsCache.set(tabId, new Set());
+          hlsCache.get(tabId).add(url);
+        }
       })
       .catch(() => {});
   },
-  { urls: ['<all_urls>'], types: ['xmlhttprequest', 'other'] },
+  {urls: ['<all_urls>'], types: ['xmlhttprequest', 'other']},
 );
 
-// Clear HLS cache on page navigation so stale streams don't persist.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') hlsCache.delete(tabId);
 });
 chrome.tabs.onRemoved.addListener(tabId => hlsCache.delete(tabId));
 
-// ─── Notify ───────────────────────────────────────────────────────────────────
-
+// ─── Notify ────────────────────────────────────────────────────────
 function notify(title, msg) {
   chrome.notifications.create('mpvise', {
-    type:     'basic',
-    iconUrl:  'icons/play-button-128.png',
+    type: 'basic',
+    iconUrl: 'icons/play-button-128.png',
     title,
-    message:  String(msg).slice(0, 200),
+    message: String(msg).slice(0, 200),
     priority: 1,
   });
 }
 
-// ─── URL Resolution ───────────────────────────────────────────────────────────
-
+// ─── URL Resolution ──────────────────────────────────────────────
 function resolveUrl(info, tab) {
   if (info.linkUrl) return info.linkUrl;
   const src = info.srcUrl;
@@ -56,113 +44,58 @@ function resolveUrl(info, tab) {
   return tab.url;
 }
 
-// ─── Play ─────────────────────────────────────────────────────────────────────
-
+// ─── Play ──────────────────────────────────────────────────────
 async function play(url, referer, tabId = null) {
   if (!url || url.startsWith('chrome://') || url.startsWith('about:')) {
     notify('MPVise', 'Cannot play this page.'); return;
   }
 
-  // Use a cached HLS stream only when no specific element URL was targeted
-  // (i.e. icon click or page right-click). A right-clicked link/video should
-  // play exactly what was clicked, not a different stream from the cache.
   const usingPageUrl = url === referer;
   const streams = usingPageUrl && tabId !== null ? hlsCache.get(tabId) : null;
-  const target  = streams?.size ? [...streams][0] : url;
-  const direct  = target !== url; // true = pre-validated m3u8, skip yt-dlp
+  const target = streams?.size ? [...streams][0] : url;
+  const direct = target !== url;
 
-  // Health-check daemon (2 s timeout).
   try {
-    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, {
-      signal: AbortSignal.timeout(2000),
-    });
+    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, {signal: AbortSignal.timeout(2000)});
     if (!r.ok) throw new Error();
   } catch {
-    notify('MPVise — Offline', 'Run:  python3 launcher.py start'); return;
+    notify('MPVise — Offline', 'Run: mpvise start'); return;
   }
 
-  notify('MPVise', direct ? 'Playing HLS stream…' : 'Resolving via yt-dlp…');
+  notify('MPVise', direct ? 'Playing HLS stream…' : 'Resolving…');
 
   try {
     const resp = await fetch(`http://127.0.0.1:${PORT}/play`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ url: target, referer, direct }),
-      signal:  AbortSignal.timeout(35_000),
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      notify('MPVise — Playing ▶', target.slice(0, 120));
-    } else {
-      notify('MPVise — Failed', body.error || `HTTP ${resp.status}`);
-    }
-  } catch (e) {
-    notify('MPVise — Error',
-      e.name === 'AbortError' ? 'Timed out (35 s)' : (e.message || String(e)));
-  }
-}
-
-// ─── Queue ─────────────────────────────────────────────────────────────────
-
-async function addToQueue(url, referer, tabId = null) {
-  const direct = false;
-
-  try {
-    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!r.ok) throw new Error();
-  } catch {
-    notify('MPVise — Offline', 'Run: python3 launcher.py start');
-    return;
-  }
-
-  try {
-    const resp = await fetch(`http://127.0.0.1:${PORT}/queue`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url, referer, direct }),
-      signal: AbortSignal.timeout(35_000),
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: target, referer, direct}),
+      signal: AbortSignal.timeout(30000),
     });
     const body = await resp.json().catch(() => ({}));
     if (resp.ok) {
-      const pos = body.position || '?';
-      notify('MPVise — Queued', `Added to queue (position ${pos})`);
+      notify('MPVise — Playing', body.browser ? `${body.browser} cookies` : '');
     } else {
       notify('MPVise — Failed', body.error || `HTTP ${resp.status}`);
     }
   } catch (e) {
-    notify('MPVise — Error',
-      e.name === 'AbortError' ? 'Timed out' : (e.message || String(e)));
+    notify('MPVise — Error', e.name === 'AbortError' ? 'Timed out' : e.message);
   }
 }
 
-// ─── Context Menu ─────────────────────────────────────────────────────────────
-
+// ─── Context Menu ────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
-    id:       'play',
-    title:    'Play with MPVise',
-    contexts: ['page', 'link', 'video', 'audio'],
-  });
-  chrome.contextMenus.create({
-    id:       'queue',
-    title:    'Add to Queue with MPVise',
+    id: 'play',
+    title: 'Play with MPVise',
     contexts: ['page', 'link', 'video', 'audio'],
   });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const url = resolveUrl(info, tab);
-  if (info.menuItemId === 'play') {
-    play(url, tab.url, tab.id);
-  } else if (info.menuItemId === 'queue') {
-    addToQueue(url, tab.url, tab.id);
-  }
+  play(resolveUrl(info, tab), tab.url, tab.id);
 });
 
-// ─── Icon Click ───────────────────────────────────────────────────────────────
-
+// ─── Icon Click ────────────────────────────────────────────────
 chrome.action.onClicked.addListener(tab => {
   play(tab.url, tab.url, tab.id);
 });
