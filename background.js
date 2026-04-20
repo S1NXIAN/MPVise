@@ -102,6 +102,41 @@ async function play(url, referer, tabId = null) {
   }
 }
 
+// ─── Queue ─────────────────────────────────────────────────────────────────
+
+async function addToQueue(url, referer, tabId = null) {
+  const direct = false;
+
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) throw new Error();
+  } catch {
+    notify('MPVise — Offline', 'Run: python3 launcher.py start');
+    return;
+  }
+
+  try {
+    const resp = await fetch(`http://127.0.0.1:${PORT}/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, referer, direct }),
+      signal: AbortSignal.timeout(35_000),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      const pos = body.position || '?';
+      notify('MPVise — Queued', `Added to queue (position ${pos})`);
+    } else {
+      notify('MPVise — Failed', body.error || `HTTP ${resp.status}`);
+    }
+  } catch (e) {
+    notify('MPVise — Error',
+      e.name === 'AbortError' ? 'Timed out' : (e.message || String(e)));
+  }
+}
+
 // ─── Context Menu ─────────────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -110,10 +145,20 @@ chrome.runtime.onInstalled.addListener(() => {
     title:    'Play with MPVise',
     contexts: ['page', 'link', 'video', 'audio'],
   });
+  chrome.contextMenus.create({
+    id:       'queue',
+    title:    'Add to Queue with MPVise',
+    contexts: ['page', 'link', 'video', 'audio'],
+  });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  play(resolveUrl(info, tab), tab.url, tab.id);
+  const url = resolveUrl(info, tab);
+  if (info.menuItemId === 'play') {
+    play(url, tab.url, tab.id);
+  } else if (info.menuItemId === 'queue') {
+    addToQueue(url, tab.url, tab.id);
+  }
 });
 
 // ─── Icon Click ───────────────────────────────────────────────────────────────

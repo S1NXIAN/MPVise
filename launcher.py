@@ -1,4 +1,5 @@
-#!/usr/bin/env python3 -B
+#!/usr/bin/env -S python3 -B
+import sys; sys.dont_write_bytecode = True
 import os; os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 """MPVise — daemon manager CLI.
 
@@ -101,7 +102,7 @@ async def cmd_start(_args) -> None:
         )
     else:
         subprocess.Popen(
-            [sys.executable, str(daemon_script())],
+            [sys.executable, "-B", str(daemon_script())],
             start_new_session=True,
             close_fds=True,
             **kw,

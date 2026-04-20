@@ -1,4 +1,5 @@
-#!/usr/bin/env python3 -B
+#!/usr/bin/env -S python3 -B
+import sys; sys.dont_write_bytecode = True
 import os; os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 """MPVise daemon — minimal, fast."""
 
@@ -31,6 +32,68 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("mpvise")
+
+# ─── Queue ───────────────────────────────────────────────────────────────────
+
+queue: list[dict] = []
+mpv_pid: int | None = None
+
+
+async def play_from_queue() -> None:
+    global mpv_pid, queue
+    if not queue:
+        mpv_pid = None
+        return
+
+    item = queue.pop(0)
+    url = item["url"]
+    referer = item.get("referer", url)
+    direct = item.get("direct", False)
+
+    log.info("PLAY (queue): %s", url[:80])
+
+    target = url
+    if not direct and not is_direct_media(url):
+        target = await extract(url)
+        if not target:
+            log.error("Extraction failed: %s", url[:100])
+            await play_from_queue()
+            return
+        log.info("→ %s", target[:80])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "mpv",
+            f"--referrer={referer}",
+            "--",
+            target,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        mpv_pid = proc.pid
+        log.info("mpv started (PID %d)", mpv_pid)
+        asyncio.create_task(_wait_for_mpv_exit())
+    except FileNotFoundError:
+        log.error("mpv not found")
+        await play_from_queue()
+
+
+async def _wait_for_mpv_exit() -> None:
+    global mpv_pid
+    while True:
+        await asyncio.sleep(2)
+        if mpv_pid is None:
+            return
+        try:
+            os.kill(mpv_pid, 0)
+        except ProcessLookupError:
+            log.info("mpv exited (PID %s)", mpv_pid)
+            mpv_pid = None
+            await play_from_queue()
+            return
+
 
 # ─── URL helpers ──────────────────────────────────────────────────────────────
 
@@ -91,47 +154,73 @@ async def handle_ping(req: web.Request) -> web.Response:
 
 
 async def handle_play(req: web.Request) -> web.Response:
+    global mpv_pid, queue
     try:
         data = await req.json()
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
 
-    url     = (data.get("url") or "").strip()
-    referer = (data.get("referer") or url).strip()
-    direct  = bool(data.get("direct", False))  # True = pre-validated stream, skip yt-dlp
-
+    url = (data.get("url") or "").strip()
     if not url.startswith("http"):
         return web.json_response({"error": "invalid url"}, status=400)
 
-    log.info("PLAY%s: %s", " [direct]" if direct else "", url[:100])
+    referer = (data.get("referer") or url).strip()
+    direct = bool(data.get("direct", False))
 
-    # Resolve playable URL
+    if mpv_pid:
+        try:
+            os.kill(mpv_pid, signal.SIGTERM)
+            log.info("Killed existing mpv (PID %d)", mpv_pid)
+        except ProcessLookupError:
+            pass
+
+    queue.insert(0, {"url": url, "referer": referer, "direct": direct})
+    await play_from_queue()
+
+    return web.json_response({"ok": True, "message": "Playing"})
+
+
+async def handle_queue(req: web.Request) -> web.Response:
+    global queue
+    try:
+        data = await req.json()
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+
+    url = (data.get("url") or "").strip()
+    if not url.startswith("http"):
+        return web.json_response({"error": "invalid url"}, status=400)
+
+    referer = (data.get("referer") or url).strip()
+    direct = bool(data.get("direct", False))
+
+    log.info("QUEUE: %s", url[:80])
+
     target = url
     if not direct and not is_direct_media(url):
         target = await extract(url)
         if not target:
-            log.error("Extraction failed: %s", url[:100])
-            return web.json_response(
-                {"error": "Could not extract a stream URL"}, status=500
-            )
+            log.error("Validation failed: %s", url[:100])
+            return web.json_response({"error": "Could not validate URL"}, status=400)
         log.info("→ %s", target[:80])
 
-    # Launch mpv (detached — survives daemon restart)
-    try:
-        await asyncio.create_subprocess_exec(
-            "mpv",
-            f"--referrer={referer}",
-            "--",
-            target,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except FileNotFoundError:
-        return web.json_response({"error": "mpv not found"}, status=503)
+    queue.append({"url": url, "referer": referer, "direct": direct})
+    position = len(queue)
 
-    return web.json_response({"ok": True, "message": "Playing"})
+    if mpv_pid is None:
+        await play_from_queue()
+
+    return web.json_response({"ok": True, "position": position})
+
+
+async def handle_queue_get(req: web.Response) -> web.Response:
+    return web.json_response({"queue": queue})
+
+
+async def handle_queue_clear(req: web.Request) -> web.Response:
+    global queue
+    queue.clear()
+    return web.json_response({"ok": True})
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -141,6 +230,9 @@ async def main() -> None:
     app = web.Application()
     app.router.add_get("/ping", handle_ping)
     app.router.add_post("/play", handle_play)
+    app.router.add_post("/queue", handle_queue)
+    app.router.add_get("/queue", handle_queue_get)
+    app.router.add_post("/queue/clear", handle_queue_clear)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
