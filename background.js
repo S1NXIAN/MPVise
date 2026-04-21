@@ -67,15 +67,6 @@ async function play(url, referer, tabId = null) {
     notify('MPVise', 'System page detected. Cannot play.'); return;
   }
 
-  // Basic validation for common video sites to avoid playing Home/Search pages
-  const isVideoSite = /youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|dailymotion\.com|tiktok\.com/.test(url);
-  const isSpecificVideo = /watch\?v=|video\/|v\/|clip\/|t\/|@[^\/]+\/video\//.test(url);
-
-  if (isVideoSite && !isSpecificVideo) {
-    notify('MPVise', 'This looks like a homepage or search result. Navigate to a specific video first.');
-    return;
-  }
-
   const usingPageUrl = url === referer;
   const streams = usingPageUrl && tabId !== null ? hlsCache.get(tabId) : null;
   const target = streams?.size ? [...streams][0] : url;
