@@ -16,7 +16,7 @@ def load_internal_defaults():
     return json.loads(path.read_text())
 
 DATA = load_internal_defaults()
-VERSION = DATA.get("version", "4.0.0")
+VERSION = DATA.get("version")
 
 # ═══════════════════════════════════════════════════════════════════
 # CONFIG
