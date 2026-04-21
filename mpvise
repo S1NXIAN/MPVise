@@ -454,6 +454,11 @@ async def main():
     app = web.Application()
     app.router.add_post("/play", handle_play)
     app.router.add_get("/ping", lambda r: web.json_response({"ok": True}))
+    app.router.add_get("/config", lambda r: web.json_response({
+        "port": PORT,
+        "browsers": CONF["browsers"],
+        "mpv_socket": MPV_SOCKET,
+    }))
 
     runner = web.AppRunner(app)
     await runner.setup()
