@@ -16,9 +16,9 @@ const BROWSER_HINT = (() => {
 
 // ─── m3u8 Sniffer ────────────────────────────────────────────────
 chrome.webRequest.onBeforeRequest.addListener(
-  ({url, tabId}) => {
+  ({ url, tabId }) => {
     if (!tabId || !url.includes('.m3u8')) return;
-    fetch(url, {headers: {Range: 'bytes=0-2048'}, signal: AbortSignal.timeout(4000)})
+    fetch(url, { headers: { Range: 'bytes=0-2048' }, signal: AbortSignal.timeout(4000) })
       .then(r => r.text())
       .then(text => {
         if (text.includes('#EXT-X-STREAM-INF')) {
@@ -26,9 +26,9 @@ chrome.webRequest.onBeforeRequest.addListener(
           hlsCache.get(tabId).add(url);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   },
-  {urls: ['<all_urls>'], types: ['xmlhttprequest', 'other']},
+  { urls: ['<all_urls>'], types: ['xmlhttprequest', 'other'] },
 );
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -38,12 +38,18 @@ chrome.tabs.onRemoved.addListener(tabId => hlsCache.delete(tabId));
 
 // ─── Notify ────────────────────────────────────────────────────────
 function notify(title, msg) {
-  chrome.notifications.create('mpvise', {
+  const id = 'mpvise-status';
+  const options = {
     type: 'basic',
     iconUrl: 'icons/play-button-128.png',
-    title,
-    message: String(msg).slice(0, 200),
+    title: title,
+    message: String(msg),
     priority: 1,
+    silent: true
+  };
+  // Force clear before creation to prevent stacking on stubborn OS managers
+  chrome.notifications.clear(id, () => {
+    chrome.notifications.create(id, options);
   });
 }
 
@@ -58,7 +64,16 @@ function resolveUrl(info, tab) {
 // ─── Play ──────────────────────────────────────────────────────
 async function play(url, referer, tabId = null) {
   if (!url || url.startsWith('chrome://') || url.startsWith('about:')) {
-    notify('MPVise', 'Cannot play this page.'); return;
+    notify('MPVise', 'System page detected. Cannot play.'); return;
+  }
+
+  // Basic validation for common video sites to avoid playing Home/Search pages
+  const isVideoSite = /youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|dailymotion\.com|tiktok\.com/.test(url);
+  const isSpecificVideo = /watch\?v=|video\/|v\/|clip\/|t\/|@[^\/]+\/video\//.test(url);
+
+  if (isVideoSite && !isSpecificVideo) {
+    notify('MPVise', 'This looks like a homepage or search result. Navigate to a specific video first.');
+    return;
   }
 
   const usingPageUrl = url === referer;
@@ -67,21 +82,44 @@ async function play(url, referer, tabId = null) {
   const direct = target !== url;
 
   try {
-    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, {signal: AbortSignal.timeout(2000)});
+    const r = await fetch(`http://127.0.0.1:${PORT}/ping`, { signal: AbortSignal.timeout(2000) });
     if (!r.ok) throw new Error();
   } catch {
     notify('MPVise — Offline', 'Run: mpvise start'); return;
   }
 
-  notify('MPVise', direct ? 'Playing HLS stream…' : 'Resolving…');
-  
+  // ─── Content Check ─────────────────────────────────────────────
+  // Fast check if we're on the page: scan for media tags
+  if (usingPageUrl && tabId !== null) {
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: {tabId},
+        func: () => {
+          const hasVideo = document.querySelector('video') !== null;
+          const hasMeta = document.querySelector('meta[property="og:video"], meta[name="twitter:player"]') !== null;
+          // Only return true if we actually see media elements
+          return hasVideo || hasMeta;
+        }
+      });
+
+      if (!result.result && !direct) {
+        notify('MPVise', 'No video detected on this page.');
+        return;
+      }
+    } catch (e) {
+      console.warn('Scripting check failed, falling back to daemon:', e);
+    }
+  }
+
+  // notify('MPVise', direct ? 'Playing HLS stream...' : 'Resolving...');
+
   let notificationId = 'mpvise';
 
   try {
     const resp = await fetch(`http://127.0.0.1:${PORT}/play`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: target, referer, direct, hint: BROWSER_HINT}),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: target, referer, direct, hint: BROWSER_HINT }),
     });
 
     if (!resp.body) throw new Error('No response body');
@@ -90,10 +128,10 @@ async function play(url, referer, tabId = null) {
     let buffer = '';
 
     while (true) {
-      const {done, value} = await reader.read();
+      const { done, value } = await reader.read();
       if (done) break;
-      
-      buffer += decoder.decode(value, {stream: true});
+
+      buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop();
 

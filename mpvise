@@ -192,48 +192,55 @@ async def detect_and_test_browser(url, progress_cb=None, hint=None, timeout=5):
     found = scan_config_browsers(only_allow=CONF["browsers"])
     priority = [b for b in CONF["browsers"] if b in found]
     
-    # If a hint is provided (active browser), prioritize it within the allowed list
+    # If a hint is provided (active browser), prioritize it
     if hint and hint in priority:
         priority.remove(hint)
         priority.insert(0, hint)
 
-    targets = priority[:4] # Race up to 4 allowed browsers
+    # Add a "No Cookies" (None) test to the race for public videos
+    targets = [None] + priority[:3]
+    
     if progress_cb:
         if len(targets) == 1:
-            await progress_cb({"status": "resolving_cookies", "browser": targets[0].capitalize()})
+            await progress_cb({"status": "resolving_cookies", "browser": "Guest"})
         else:
             await progress_cb({"status": "racing_browsers", "count": len(targets)})
 
     async def test_one(browser):
         try:
+            args = ["yt-dlp", "--list-subs", url]
+            if browser:
+                args.extend(["--cookies-from-browser", browser])
+            
             proc = await asyncio.create_subprocess_exec(
-                "yt-dlp", "--cookies-from-browser", browser, "--list-subs", url,
+                *args,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
             )
             await asyncio.wait_for(proc.communicate(), timeout=timeout)
             if proc.returncode == 0:
-                return browser
+                return browser if browser else "guest"
         except:
             pass
-        return None
+        return False
 
     # Create tasks for all browsers and wait for the first SUCCESS
     tasks = [asyncio.create_task(test_one(b)) for b in targets]
     
-    done_browser = None
+    found_browser = None
     for coro in asyncio.as_completed(tasks):
         res = await coro
-        if res:
-            done_browser = res
+        if res is not False:
+            found_browser = res
             break
     
     # Cancel remaining tasks
     for t in tasks:
         if not t.done(): t.cancel()
     
-    if done_browser:
-        save_browser_cache(done_browser)
-        return done_browser
+    if found_browser:
+        if found_browser != "guest":
+            save_browser_cache(found_browser)
+        return found_browser
 
     return None
 
@@ -340,6 +347,14 @@ async def stop_daemon(silent=False):
 # MODULE: HTTP Server
 # ═══════════════════════════════════════════════════════════
 
+def get_display_env():
+    """Heuristic to find display variables for Wayland/X11"""
+    env = {}
+    for var in ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]:
+        if var in os.environ:
+            env[var] = os.environ[var]
+    return env
+
 def get_mpv_env():
     """Get environment with display vars for mpv"""
     env = {**os.environ}
@@ -376,6 +391,9 @@ async def handle_play(req):
     browser = None
     if not direct:
         browser = await detect_and_test_browser(url, progress_cb=send_event, hint=hint)
+        if not browser:
+            await send_event({"error": "No playable video found. (Tried guest mode + configured browsers)"})
+            return
 
     cmd = ["mpv"]
     if CONF["mpv_socket"]:
@@ -384,9 +402,10 @@ async def handle_play(req):
         cmd.append(f"--ytdl-format={CONF['ytdlp_format']}")
     if CONF["mpv_args"]:
         cmd.extend(CONF["mpv_args"])
-    if browser:
-        cmd.append(f"--cookies-from-browser={browser}")
+    if browser and browser != "guest":
+        cmd.append(f"--ytdl-raw-options=cookies-from-browser={browser}")
     cmd.append(url)
+    log(f"EXEC: {' '.join(cmd)}")
 
     try:
         await send_event({"status": "launching", "browser": browser})
@@ -394,9 +413,30 @@ async def handle_play(req):
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=get_mpv_env()
         )
+        
+        # Non-blocking "Is it still alive?" check
+        try:
+            # We only wait a short bit for immediate startup crashes
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+            if proc.returncode != 0:
+                # If it exited, try to read the last error from stderr
+                stderr_data = await proc.stderr.read()
+                err = stderr_data.decode().strip().split('\n')[-1] if stderr_data else f"Code {proc.returncode}"
+                log(f"mpv exited immediately: {err}")
+                await send_event({"error": f"mpv failed to start ({err})"})
+                return resp
+        except asyncio.TimeoutError:
+            # Still running! Start a background task to drain stderr so it doesn't deadlock
+            async def drain_pipe(stream):
+                try:
+                    while True:
+                        if not await stream.read(8192): break
+                except: pass
+            asyncio.create_task(drain_pipe(proc.stderr))
+
         await send_event({"status": "playing", "ok": True, "browser": browser, "direct": direct})
     except FileNotFoundError:
         await send_event({"error": "mpv not found"})
