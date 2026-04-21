@@ -1,7 +1,7 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════
-// CONFIG (loaded from daemon at startup)
+// CONFIG
 // ═══════════════════════════════════════════════════════
 
 const CONFIG = {
@@ -12,44 +12,23 @@ const CONFIG = {
 };
 
 // ═══════════════════════════════════════════════════════
-// HLS CACHE MANAGER
+// HLS CACHE
 // ═══════════════════════════════════════════════════════
 
 const HLS = {
   cache: new Map(),
-  validating: new Set(),
 
-  isValidating(url) {
-    return this.validating.has(url);
-  },
-
-  addValidation(url) {
-    this.validating.add(url);
-  },
-
-  removeValidation(url) {
-    this.validating.delete(url);
-  },
-
-  hasStream(tabId) {
-    return this.cache.has(tabId);
-  },
-
-  getStreams(tabId) {
+  getStream(tabId) {
     return this.cache.get(tabId) || null;
   },
 
   addStream(tabId, url) {
-    if (!this.cache.has(tabId)) this.cache.set(tabId, new Set());
-    this.cache.get(tabId).add(url);
+    this.cache.set(tabId, url);
+    chrome.action.setBadgeText({ text: '!', tabId });
   },
 
   clear(tabId) {
     this.cache.delete(tabId);
-  },
-
-  clearAll() {
-    this.cache.clear();
   },
 };
 
@@ -57,33 +36,25 @@ const HLS = {
 
 chrome.webRequest.onBeforeRequest.addListener(
   ({ url, tabId }) => {
-    try {
-      if (!tabId || !url.includes('.m3u8')) return;
-      if (HLS.isValidating(url)) return;
-      HLS.addValidation(url);
-      fetch(url, {
-        headers: { Range: 'bytes=0-2047' },
-        signal:  AbortSignal.timeout(CONFIG.TIMEOUT_VALIDATE),
-      })
-        .then(r => r.text())
-        .then(text => {
-          if (!text.includes('#EXT-X-STREAM-INF')) return;
+    if (!tabId || !url.includes('.m3u8')) return;
+    fetch(url, { headers: { Range: 'bytes=0-4095' }, signal: AbortSignal.timeout(CONFIG.TIMEOUT_VALIDATE) })
+      .then(r => r.text())
+      .then(text => {
+        if (text.includes('#EXT-X-STREAM-INF')) {
           HLS.addStream(tabId, url);
-        })
-        .catch(e => console.error('[mpvise] m3u8 validation failed:', url, e.message))
-        .finally(() => HLS.removeValidation(url));
-    } catch (_) {}
+        }
+      })
+      .catch(e => console.error('[mpvise] sniffer:', url, e.message));
   },
   { urls: ['<all_urls>'], types: ['xmlhttprequest', 'other'] },
 );
 
-// ─── Cache Cleanup ──────────────────────────────────────
-
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'loading') HLS.clear(tabId);
+  if (changeInfo.status === 'loading') {
+    HLS.clear(tabId);
+    chrome.action.setBadgeText({ text: '', tabId });
+  }
 });
-
-chrome.tabs.onRemoved.addListener(tabId => HLS.clear(tabId));
 
 // ═══════════════════════════════════════════════════════
 // NOTIFIER
@@ -91,42 +62,15 @@ chrome.tabs.onRemoved.addListener(tabId => HLS.clear(tabId));
 
 const Notify = {
   create(title, msg) {
-    chrome.notifications.create('mpvise', {
-      type:     'basic',
-      iconUrl:  'icons/play-button-128.png',
-      title,
-      message:  String(msg).slice(0, 200),
-      priority: 1,
-    });
+    chrome.notifications.create('mpvise', { type: 'basic', iconUrl: 'icons/play-button-128.png', title, message: String(msg).slice(0, 200), priority: 1 });
   },
-
-  playing(msg) {
-    this.create('MPVise — Playing ▶', msg);
-  },
-
-  resolving() {
-    this.create('MPVise', 'Resolving via yt-dlp…');
-  },
-
-  direct() {
-    this.create('MPVise', 'Playing HLS stream…');
-  },
-
-  offline() {
-    this.create('MPVise — Offline', 'Run: mpvise start');
-  },
-
-  invalidPage() {
-    this.create('MPVise', 'Cannot play this page.');
-  },
-
-  failed(msg) {
-    this.create('MPVise — Failed', msg);
-  },
-
-  error(msg) {
-    this.create('MPVise — Error', msg);
-  },
+  playing(msg) { this.create('MPVise — Playing ▶', msg); },
+  resolving() { this.create('MPVise', 'Resolving via yt-dlp…'); },
+  direct() { this.create('MPVise', 'Playing HLS stream…'); },
+  offline() { this.create('MPVise — Offline', 'Run: mpvise start'); },
+  invalidPage() { this.create('MPVise', 'Cannot play this page.'); },
+  failed(msg) { this.create('MPVise — Failed', msg); },
+  error(msg) { this.create('MPVise — Error', msg); },
 };
 
 // ═══════════════════════════════════════════════════════
@@ -142,14 +86,11 @@ const Daemon = {
 
   async _tryPort(port) {
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/config`, {
-        signal: AbortSignal.timeout(CONFIG.TIMEOUT_PING),
-      });
+      const r = await fetch(`http://127.0.0.1:${port}/config`, { signal: AbortSignal.timeout(CONFIG.TIMEOUT_PING) });
       if (r.ok) {
         const cfg = await r.json();
         this._port = cfg.port || port;
         chrome.storage.local.set({ mpvise_port: this._port });
-        console.log('[mpvise] config loaded, port:', this._port);
         return true;
       }
     } catch (_) {}
@@ -158,30 +99,20 @@ const Daemon = {
 
   async getConfig() {
     let stored = { mpvise_port: null };
-    try {
-      stored = await chrome.storage.local.get('mpvise_port');
-    } catch (_) {}
-    const ports = [stored.mpvise_port, CONFIG.DEFAULT_PORT].filter(Boolean);
+    try { stored = await chrome.storage.local.get('mpvise_port'); } catch (_) {}
+    const ports = stored.mpvise_port ? [stored.mpvise_port] : [CONFIG.DEFAULT_PORT];
     for (const port of ports) {
-      if (port && await this._tryPort(port)) return;
+      if (await this._tryPort(port)) return;
     }
-    console.log('[mpvise] daemon not running');
   },
 
   async ping() {
-    const r = await fetch(`${this.url}/ping`, {
-      signal: AbortSignal.timeout(CONFIG.TIMEOUT_PING),
-    });
+    const r = await fetch(`${this.url}/ping`, { signal: AbortSignal.timeout(CONFIG.TIMEOUT_PING) });
     if (!r.ok) throw new Error();
   },
 
   async play(url, referer, direct) {
-    const resp = await fetch(`${this.url}/play`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ url, referer, direct }),
-      signal:  AbortSignal.timeout(CONFIG.TIMEOUT_PLAY),
-    });
+    const resp = await fetch(`${this.url}/play`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, referer, direct }), signal: AbortSignal.timeout(CONFIG.TIMEOUT_PLAY) });
     const body = await resp.json().catch(() => ({}));
     return { ok: resp.ok, status: resp.status, body };
   },
@@ -192,59 +123,32 @@ const Daemon = {
 // ═══════════════════════════════════════════════════════
 
 const Play = {
-  resolveUrl(info, tab) {
-    try {
-      if (info.linkUrl) return info.linkUrl;
-      const src = info.srcUrl;
-      if (src && !src.startsWith('blob:') && !src.startsWith('data:')) return src;
-      return tab?.url || '';
-    } catch (_) {
-      return '';
-    }
+  resolveUrl(info, tab = {}) {
+    return info.linkUrl || (info.srcUrl && !info.srcUrl.startsWith('blob:') && !info.srcUrl.startsWith('data:') ? info.srcUrl : tab?.url) || '';
   },
 
   isPlayable(url) {
-    if (!url) return false;
-    if (url.startsWith('chrome://')) return false;
-    if (url.startsWith('about:')) return false;
-    return true;
+    return url && !url.startsWith('chrome://') && !url.startsWith('about:');
   },
 
-  getTarget(url, referer, tabId) {
-    const usingPageUrl = url === referer;
-    const streams = usingPageUrl && tabId !== null ? HLS.getStreams(tabId) : null;
-    const target = streams?.size ? [...streams][0] : url;
-    const direct = target !== url;
-    return { target, direct };
+  getTarget(url, tabId) {
+    const m3u8 = HLS.getStream(tabId);
+    return { target: m3u8 || url, direct: !!m3u8 };
   },
 
   async play(url, referer, tabId = null) {
-    if (!this.isPlayable(url)) {
-      Notify.invalidPage();
-      return;
-    }
+    if (!this.isPlayable(url)) return Notify.invalidPage();
+    try { await Daemon.getConfig(), await Daemon.ping(); }
+    catch { return Notify.offline(); }
 
-    const { target, direct } = this.getTarget(url, referer, tabId);
-
-    try {
-      await Daemon.ping();
-    } catch {
-      Notify.offline();
-      return;
-    }
-
+    const { target, direct } = this.getTarget(url, tabId);
     direct ? Notify.direct() : Notify.resolving();
 
     try {
       const { ok, status, body } = await Daemon.play(target, referer, direct);
-      if (ok) {
-        Notify.playing(target.slice(0, 120));
-      } else {
-        Notify.failed(body.error || `HTTP ${status}`);
-      }
+      ok ? Notify.playing(target.slice(0, 120)) : Notify.failed(body.error || `HTTP ${status}`);
     } catch (e) {
-      const msg = e.name === 'AbortError' ? 'Timed out (35 s)' : (e.message || String(e));
-      Notify.error(msg);
+      Notify.error(e.name === 'AbortError' ? 'Timed out (35 s)' : e.message);
     }
   },
 };
@@ -255,20 +159,12 @@ const Play = {
 
 chrome.runtime.onInstalled.addListener(() => {
   Daemon.getConfig();
-  chrome.contextMenus.create({
-    id:       'play',
-    title:    'Play with MPVise',
-    contexts: ['page', 'link', 'video', 'audio'],
-  });
+  chrome.contextMenus.create({ id: 'play', title: 'Play with MPVise', contexts: ['page', 'link', 'video', 'audio'] });
+  chrome.action.setBadgeBackgroundColor({ color: '#4a90d9' });
 });
 
-// Load config when extension starts (also on browser restart)
 Daemon.getConfig().catch(() => {});
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  Play.play(Play.resolveUrl(info, tab), tab.url, tab.id);
-});
+chrome.contextMenus.onClicked.addListener((info, tab) => Play.play(Play.resolveUrl(info, tab), tab.url, tab.id));
 
-chrome.action.onClicked.addListener(tab => {
-  Play.play(tab.url, tab.url, tab.id);
-});
+chrome.action.onClicked.addListener(tab => Play.play(tab.url, tab.url, tab.id));
